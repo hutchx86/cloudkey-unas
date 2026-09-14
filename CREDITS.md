@@ -1,5 +1,13 @@
 # Credits & third-party notices
 
+## Special thanks
+
+Special thanks to **dciancu** for
+[unifi-protect-unvr-docker-arm64](https://github.com/dciancu/unifi-protect-unvr-docker-arm64).
+That project was the direct inspiration for this one: it showed the approach
+was viable, and much of what was needed to get it working was learned from it.
+This project would not exist in its current form without it.
+
 ## Reference project
 
 The original approach — binwalk-extract a UniFi firmware image, `dpkg-repack`

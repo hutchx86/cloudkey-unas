@@ -123,7 +123,10 @@ reboots, and runs `05-verify.sh`.
 - This project is intended for interoperability and personal use on hardware
   you own. Reverse engineering may be restricted in your jurisdiction; you
   are responsible for how you use it.
-- See [CREDITS.md](CREDITS.md) for third-party code and inspiration.
+- See [CREDITS.md](CREDITS.md) for third-party code. Special thanks to
+  [dciancu](https://github.com/dciancu) and
+  [unifi-protect-unvr-docker-arm64](https://github.com/dciancu/unifi-protect-unvr-docker-arm64),
+  the project that inspired this one.
 
 ## Disclaimer
 

@@ -45,3 +45,7 @@ linux-qcom-*-ui-qcom/
 /protocol.md
 /status.md
 /todo.md
+*.key
+*.pem
+*.crt
+.env
