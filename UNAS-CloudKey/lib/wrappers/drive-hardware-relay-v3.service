@@ -1,0 +1,19 @@
+[Unit]
+Description=Drive hardware-identity relay (frame-aware v3)
+# This unit owns both the relay process and the iptables redirect's lifecycle
+# together, so they can never be present without each other after a reboot.
+After=network.target
+Before=unifi-drive.service
+
+[Service]
+Type=simple
+# Idempotent: -C (check) first so a restart (e.g. after a crash) never
+# stacks a duplicate rule; only -A (append) if the check fails.
+ExecStartPre=/bin/sh -c 'iptables -t nat -C OUTPUT -p tcp -m owner --uid-owner unifi-drive --dport 11081 -j REDIRECT --to-port 11090 2>/dev/null || iptables -t nat -A OUTPUT -p tcp -m owner --uid-owner unifi-drive --dport 11081 -j REDIRECT --to-port 11090'
+ExecStart=/usr/bin/python3 /usr/local/sbin/drive-hardware-relay-v3.py
+ExecStopPost=/bin/sh -c 'iptables -t nat -D OUTPUT -p tcp -m owner --uid-owner unifi-drive --dport 11081 -j REDIRECT --to-port 11090 2>/dev/null || true'
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

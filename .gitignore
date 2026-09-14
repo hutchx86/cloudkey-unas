@@ -1,0 +1,47 @@
+devices.md
+fw-download/
+fw_extract/
+fw_disassembly/
+*.bin
+*.img
+
+# device backups/captures and other downloaded data -- may contain private
+# keys, tokens, and user PII; keep on disk, never in git
+file_downloads/
+*.har
+*.unifi
+
+# local agent settings (may contain pasted credentials)
+.claude/
+
+# python bytecode from lint/compile
+__pycache__/
+*.pyc
+
+# regenerable firmware blobs -- rebuild with scripts/fetch-firmware-debs.sh
+# (debs) / 01-build-kernel.sh (modules), not stored in git
+fw_picked/debs-build/
+fw_picked/kernel-modules-*/
+fw_picked/cloudkey-kernel-build/
+
+# GPL source material (Ubiquiti's vendor tarball, etc.) -- large, and
+# redistributed as a separate repo, never committed here
+UCKP-*-GPL.tar.gz
+UCKP-*-GPL/
+linux-qcom-*-ui-qcom.tar
+linux-qcom-*-ui-qcom/
+*.tar.gz
+*.tgz
+
+# internal project notes -- kept on disk, deliberately not published
+/CLAUDE.md
+/commands.md
+/disassembly.md
+/implementation.md
+/llm_decisions.md
+/optional.md
+/other.md
+/project.md
+/protocol.md
+/status.md
+/todo.md
