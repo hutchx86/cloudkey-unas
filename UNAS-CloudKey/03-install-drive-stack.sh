@@ -151,10 +151,15 @@ install_plain_debian_deps() {
         avahi-daemon \
         attr ecryptfs-utils nfs-kernel-server fuse3 rsync libimage-exiftool-perl \
         btrfs-progs lvm2
-    # wsdd-server is in no apt repo (Debian nor apt.artifacts.ui.com); its only real source is fw_picked/debs-build/, so install the local .deb first.
+    # wsdd-server/wsdd are in no apt repo, so they come from fw_picked/. The
+    # firmware's wsdd is a thin wrapper that Depends: wsdd2 (the daemon), which is
+    # not pinned -- install wsdd2 from apt (trixie ships it) so wsdd configures
+    # before the uos step below (uos needs wsdd).
     if compgen -G "$DEBS_DIR/wsdd-server_*.deb" >/dev/null; then
-        log "wsdd-server from fw_picked/debs-build/ (not in any apt repo)"
+        log "wsdd-server + wsdd from fw_picked/debs-build/ (wsdd2 from apt)"
+        apt_run_with_mirror_gap_retry install -y wsdd2
         dpkg -i "$DEBS_DIR"/wsdd-server_*.deb "$DEBS_DIR"/wsdd_*.deb || true
+        apt_run_with_mirror_gap_retry install -f -y
     else
         log "no local wsdd-server .deb found, trying apt"
         apt-get install -y wsdd-server
