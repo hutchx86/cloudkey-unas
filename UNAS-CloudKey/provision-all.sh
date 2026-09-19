@@ -114,8 +114,9 @@ ensure_remote_rsync() {
 }
 
 sync_artifacts() {
-    log "syncing UNAS-CloudKey/ + fw_picked/debs-build/ + fw_picked/kernel-modules-$EXPECT_KERNEL/ to $DEVICE_HOST:$REMOTE_DIR"
-    ssh_dev "mkdir -p '$REMOTE_DIR/UNAS-CloudKey/lib/wrappers' '$REMOTE_DIR/fw_picked/debs-build' '$REMOTE_DIR/fw_picked/kernel-modules-$EXPECT_KERNEL'"
+    local modules_dir="$PROJECT_DIR/fw_picked/kernel-modules-$EXPECT_KERNEL"
+    log "syncing UNAS-CloudKey/ + fw_picked/debs-build/ to $DEVICE_HOST:$REMOTE_DIR"
+    ssh_dev "mkdir -p '$REMOTE_DIR/UNAS-CloudKey/lib/wrappers' '$REMOTE_DIR/fw_picked/debs-build'"
     # --chown=root:root: rsync -a otherwise preserves the source's numeric
     # uid/gid, which on the device can coincidentally map to a real, unrelated
     # Drive user account. Harmless over ssh (always root), but avoid leaving
@@ -126,8 +127,20 @@ sync_artifacts() {
         "$SCRIPT_DIR/" "$DEVICE_HOST:$REMOTE_DIR/UNAS-CloudKey/"
     rsync -e "ssh -S $SSH_CONTROL_SOCKET" -a --chown=root:root \
         "$PROJECT_DIR/fw_picked/debs-build/" "$DEVICE_HOST:$REMOTE_DIR/fw_picked/debs-build/"
-    rsync -e "ssh -S $SSH_CONTROL_SOCKET" -a --chown=root:root \
-        "$PROJECT_DIR/fw_picked/kernel-modules-$EXPECT_KERNEL/" "$DEVICE_HOST:$REMOTE_DIR/fw_picked/kernel-modules-$EXPECT_KERNEL/"
+    # The kernel module tree is optional: it only exists after a kernel build
+    # in this checkout. On a re-provision of an already-flashed device from a
+    # fresh clone there is nothing local to send, and 03 uses whatever is
+    # already under the device's /lib/modules/$EXPECT_KERNEL/ (it only needs
+    # the local tree as a self-heal source when that is missing). Syncing a
+    # non-existent dir would otherwise abort the whole run under `set -e`.
+    if [[ -d "$modules_dir" ]]; then
+        log "syncing kernel module tree $modules_dir"
+        ssh_dev "mkdir -p '$REMOTE_DIR/fw_picked/kernel-modules-$EXPECT_KERNEL'"
+        rsync -e "ssh -S $SSH_CONTROL_SOCKET" -a --chown=root:root \
+            "$modules_dir/" "$DEVICE_HOST:$REMOTE_DIR/fw_picked/kernel-modules-$EXPECT_KERNEL/"
+    else
+        log "  NOTE: no local $modules_dir -- skipping module-tree sync; 03 will use the device's existing /lib/modules/$EXPECT_KERNEL/ (and abort there if it is missing)"
+    fi
     ssh_dev "chmod +x '$REMOTE_DIR'/UNAS-CloudKey/*.sh '$REMOTE_DIR'/UNAS-CloudKey/lib/*.sh '$REMOTE_DIR'/UNAS-CloudKey/lib/wrappers/*.sh '$REMOTE_DIR'/UNAS-CloudKey/lib/wrappers/*.py"
 }
 

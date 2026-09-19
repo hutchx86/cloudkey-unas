@@ -188,7 +188,7 @@ if ! command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
     echo "Install the toolchain first:" >&2
     echo "  apt update && apt install -y crossbuild-essential-arm64 build-essential \\" >&2
     echo "    bc bison flex libssl-dev libelf-dev dwarves kmod cpio rsync git \\" >&2
-    echo "    python2 device-tree-compiler" >&2
+    echo "    python3 perl device-tree-compiler" >&2
     exit 1
 fi
 

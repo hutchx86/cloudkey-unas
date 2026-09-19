@@ -25,10 +25,14 @@ failures=0
 
 log() { echo "[lint] $*"; }
 
-# --- Collect shell scripts (tracked or not) from the pipeline and scripts/ ---
+# --- Collect shell scripts (tracked or not) from the pipeline, scripts/, and
+#     the repo root (install.sh) ---
 mapfile -t SHELL_SCRIPTS < <(
-    find "$PROJECT_DIR/UNAS-CloudKey" "$PROJECT_DIR/scripts" \
-        -type f -name '*.sh' | sort
+    {
+        find "$PROJECT_DIR/UNAS-CloudKey" "$PROJECT_DIR/scripts" \
+            -type f -name '*.sh'
+        find "$PROJECT_DIR" -maxdepth 1 -type f -name '*.sh'
+    } | sort -u
 )
 
 # --- 1. bash -n: parse without executing ---

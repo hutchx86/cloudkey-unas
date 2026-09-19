@@ -28,16 +28,19 @@ Docker or emulation layer.**
 
 ## Quick start
 
-The custom kernel is built and flashed by hand first (see
-[Install / Usage](#install--usage)). Once it is, provisioning the Drive stack is
-one command:
+On a Debian machine that can reach the Cloud Key:
 
 ```
 git clone https://github.com/hutchx86/cloudkey-unas && cd cloudkey-unas
-scripts/fetch-firmware-debs.sh
-DEVICE_HOST=root@<cloudkey-ip> DEVICE_PASSWORD='...' \
-  UNAS-CloudKey/provision-all.sh
+./install.sh
 ```
+
+`install.sh` installs its own host dependencies, asks for the Cloud Key's
+address and root password, then does everything: build and flash the custom
+kernel, install the Drive stack, apply the fix layer, reboot, and verify. It
+asks for confirmation before flashing, and on a re-run where the device already
+runs the custom kernel it skips the kernel build entirely. First-time pool
+creation is still a WebUI step.
 
 ## At a glance
 
@@ -73,6 +76,7 @@ is emulated.
 
 | Component | Language | Role |
 | --- | --- | --- |
+| `install.sh` | Bash | Single entry point: host deps, credentials, build/flash, provision |
 | `UNAS-CloudKey/` | Bash | Build + provisioning pipeline (`00`..`05`, `provision-all.sh`) |
 | `UNAS-CloudKey/custom-drivers/` | C | Kernel drivers: `ubnthal` identity, fake HDD-bay presence, display, LEDs, power-source, Bluetooth |
 | `UNAS-CloudKey/lib/wrappers/` | Python / Bash | `ubnt-tools` identity wrapper, frame-aware hardware relay, mount/mkfs wrappers |
@@ -83,7 +87,6 @@ is emulated.
 | Model | SoC / variant | Status | Notes |
 | --- | --- | --- | --- |
 | Cloud Key Gen 2 Plus (`UCKP`) | Qualcomm APQ8053 | Verified | Drive stack installed and btrfs pool mounted; `05-verify.sh` passes |
-| Cloud Key Gen 2 | Qualcomm APQ8053 | Untested | Identical kernel config, but no drive bay; not exercised |
 
 ## Features
 
@@ -92,18 +95,18 @@ is emulated.
   CloudKey drivers, btrfs, FUSE, and a `statx(2)` backport.
 - **Identity layer** — `/proc/ubnthal` in the kernel plus a `ubnt-tools` wrapper
   and frame-aware relay in userspace present a NAS-class board.
-- **Idempotent provisioning** — `provision-all.sh` installs, fixes, reboots, and
-  verifies; every step is safe to re-run.
+- **One-command install** — `install.sh` bootstraps the Debian host, builds
+  and flashes the kernel, then provisions and verifies the Drive stack.
+- **Idempotent and re-runnable** — every stage checks state before changing
+  anything; a device already on the custom kernel skips the build/flash.
 - **No Docker** — everything runs directly on the real hardware over SSH.
 
 ## Requirements
 
 - A UniFi Cloud Key Gen 2 Plus, **and its root password**.
-- A Linux machine with SSH access to the device (the build host can be the same
-  machine).
-- A Debian bullseye build host for the custom kernel (see
-  `UNAS-CloudKey/00-create-chroot.sh`). Bullseye matters: the kernel is built
-  with gcc 10.2.1.
+- A Debian build host (bullseye or newer) with root or `sudo`, SSH reach to the
+  device, and a few GB of free disk for the chroot, kernel source, and kernel
+  build. `install.sh` installs the host tools it needs.
 - Network access to Ubiquiti's public firmware API and the companion
   kernel-source repo. The scripts download and checksum-verify; nothing is
   redistributed here.
@@ -111,6 +114,7 @@ is emulated.
 ## Repository layout
 
 ```
+install.sh       single entry point: host deps -> build/flash -> provision
 UNAS-CloudKey/   build + provisioning pipeline (00..05, provision-all.sh)
     custom-drivers/   kernel drivers (GPL-2.0; see CREDITS.md)
     lib/              SSH helper + on-device wrappers
@@ -121,60 +125,76 @@ docs/images/     README assets
 
 ## Install / Usage
 
-Everything runs from `UNAS-CloudKey/`; the `0N` prefixes are the pipeline order.
-`00`–`02` build and flash the kernel (build host + SSH); `03`–`05` install, fix,
-and verify the Drive stack (on the device, orchestrated by `provision-all.sh`).
-Each script is idempotent and safe to re-run.
+`./install.sh` is the only command needed. It runs the whole pipeline in order
+and is safe to re-run. Run it from the repository root on the Debian build host
+(not on the device).
 
-**Prerequisite — regenerate the pinned packages.** The ~320 MB of Ubiquiti `.deb`s
-are not stored in the repo, and `03` needs them. Fetch the pinned set (downloads
-and checksum-verifies the firmware; needs `wget`, `unsquashfs`, `dpkg-deb`):
+**What it asks**
+
+- The Cloud Key address (e.g. `10.10.10.61`, or `user@host`) and its root
+  password.
+- A typed `yes` before the kernel is flashed — the one destructive step.
+
+**What it does**
+
+| Stage | Script | Runs on |
+| --- | --- | --- |
+| Install missing host tools | `install.sh` | build host |
+| Regenerate the pinned Ubiquiti `.deb`s | `scripts/fetch-firmware-debs.sh` | build host |
+| Read the device's running config, live DTB, and stock boot partition | `install.sh` | build host → device |
+| Create the bullseye chroot | `UNAS-CloudKey/00-create-chroot.sh` | build host |
+| Build the custom kernel | `UNAS-CloudKey/01-build-kernel.sh` | chroot |
+| Back up, transfer, and flash the kernel + modules | `UNAS-CloudKey/02-flash-kernel.sh` | build host → device |
+| Reboot into the new kernel | `install.sh` | device |
+| Install, fix, reboot, verify | `UNAS-CloudKey/provision-all.sh` (`03`/`04`/`05`) | device |
+
+If the device already runs `3.18.44-btrfscustom`, the kernel stages are skipped;
+`--rebuild-kernel` forces them. `--yes` makes the run non-interactive (requires
+`DEVICE_HOST` and `DEVICE_PASSWORD` in the environment, and skips the flash
+confirmation).
+
+**Advanced — run stages individually**
+
+The `0N` prefixes are the pipeline order; these are the same steps `install.sh`
+drives, for re-running one stage or debugging. Each reads `DEVICE_HOST` and
+`DEVICE_PASSWORD` from the environment.
 
 ```
+# 1. regenerate the pinned packages (needed by 03; not stored in the repo)
 scripts/fetch-firmware-debs.sh
-```
 
-### 00 — Create the bullseye chroot (once, on the build host)
-
-```
-UNAS-CloudKey/00-create-chroot.sh        # root; debootstraps bullseye + toolchain
-```
-
-### 01 — Build the custom kernel (inside the chroot)
-
-Set `KERNEL_SRC_REPO` to the companion kernel-source repo, or supply a local
-tarball/GPL bundle (see the script header). Run it from the directory holding
-`verified-running.config` and `cloudkey-live.dtb`:
-
-```
+# 2. create the bullseye chroot once, then build inside it
+UNAS-CloudKey/00-create-chroot.sh
 KERNEL_SRC_REPO=https://github.com/hutchx86/ckg2plus-kernel-src.git \
-  UNAS-CloudKey/01-build-kernel.sh
+  UNAS-CloudKey/01-build-kernel.sh          # inside the chroot
+
+# 3. flash the built image + module tree (asks for confirmation)
+UNAS-CloudKey/02-flash-kernel.sh <path>/new-boot.img <path>/modules-staging
+
+# 4. install, fix, reboot, verify
+UNAS-CloudKey/provision-all.sh
 ```
 
-It writes `new-boot.img` and a `modules-staging/` tree, and prints the exact `02`
-command to run next.
+`01` needs the device-derived `verified-running.config`, `cloudkey-live.dtb`,
+`bootimg.cfg`, and `initrd.img` in its working directory (see its header);
+`install.sh` produces these under `$BUILD_DIR`. It writes `new-boot.img` and a
+`modules-staging/` tree, and prints the exact `02` command to run next.
 
-### 02 — Flash the kernel (from your machine, to the device)
+## Configuration
 
-```
-DEVICE_HOST=root@<cloudkey-ip> DEVICE_PASSWORD='...' \
-  UNAS-CloudKey/02-flash-kernel.sh <path>/new-boot.img <path>/modules-staging
-```
+`install.sh` flags: `--rebuild-kernel`, `--yes`, `--help`. Environment overrides:
 
-It backs up the current boot partition, verifies the transfer, and then asks you
-to type `yes`. For scripted runs set `FLASH_CONFIRM=yes` (this skips a safety
-confirmation — only do so if you are sure).
-
-### provision-all.sh — install, fix, reboot, verify (device)
-
-```
-DEVICE_HOST=root@<cloudkey-ip> DEVICE_PASSWORD='...' \
-  UNAS-CloudKey/provision-all.sh
-```
-
-This syncs to the device, runs `03-install-drive-stack.sh` and
-`04-apply-drive-fixes.sh`, reboots, and runs `05-verify.sh`. The individual
-`03`/`04`/`05` scripts can also be run directly on the device.
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `DEVICE_HOST` | prompted | Cloud Key address (`root@` assumed for a bare IP) |
+| `DEVICE_PASSWORD` | prompted | device root password |
+| `KERNEL_SRC_REPO` | `ckg2plus-kernel-src` companion repo | kernel source repo to clone (a local tarball/GPL bundle also works — see `01`'s header) |
+| `BUILD_DIR` | `$HOME/ck-kernel-build` | kernel build + device-input staging |
+| `CHROOT_PATH` | `$HOME/bullseye-chroot` | bullseye build chroot |
+| `BOOT_PARTITION` | `/dev/mmcblk0p42` | device boot partition backed up for `bootimg.cfg`/`initrd.img` |
+| `SSH_CONTROL_SOCKET` | `/tmp/ck_ssh_ctrl.sock` | SSH ControlMaster socket |
+| `FLASH_CONFIRM` | — | `yes` skips `02`'s flash confirmation |
+| `REBOOT_WAIT_MAX_SECS` | `900` | max wait for the rebooted device |
 
 ## Verification
 

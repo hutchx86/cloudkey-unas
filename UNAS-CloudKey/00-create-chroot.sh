@@ -65,9 +65,14 @@ fi
 
 # Matches the package list 01-build-kernel.sh's check_prerequisites() expects
 # (crossbuild-essential-arm64 build-essential bc bison flex libssl-dev
-# libelf-dev dwarves kmod cpio rsync python2 device-tree-compiler), plus
-# abootimg for package_boot_image()'s new-boot.img and openssh-client for
-# manual scp/ssh inside the chroot.
+# libelf-dev dwarves kmod cpio rsync python3 device-tree-compiler), plus:
+#   git            KERNEL_SRC_REPO is cloned, not fetched as a tarball
+#   perl           perl -0pi is used to insert the statx prototypes
+#   python3        the statx(2) backport patches are python3 heredocs
+#   abootimg       package_boot_image()'s new-boot.img
+#   openssh-client manual scp/ssh inside the chroot
+# python3/perl are NOT guaranteed by a minimal debootstrap, so install them
+# explicitly rather than assuming they come in with the base system.
 log "installing cross-compile toolchain and kernel build dependencies"
 chroot "$CHROOT_PATH" bash -c '
     export DEBIAN_FRONTEND=noninteractive
@@ -75,7 +80,7 @@ chroot "$CHROOT_PATH" bash -c '
     apt-get install -y \
         crossbuild-essential-arm64 build-essential \
         bc bison flex libssl-dev libelf-dev dwarves kmod cpio rsync \
-        python2 device-tree-compiler abootimg \
+        python3 perl device-tree-compiler abootimg git \
         wget ca-certificates openssh-client
 '
 
