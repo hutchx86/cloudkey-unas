@@ -168,15 +168,27 @@ fix_broken_symlinks() {
 # accessory drivers are disabled; ax88179_178a.c (the only NIC) comes from mainline.
 echo "== Fixing broken symlinks =="
 
-# --- ax88179_178a: pull the real file from mainline ---
-if [ ! -f /tmp/linux-3.18.44/drivers/net/usb/ax88179_178a.c ]; then
-    echo "   Downloading mainline 3.18.44 source for ax88179_178a.c..."
-    ( cd /tmp && \
-      wget -q https://cdn.kernel.org/pub/linux/kernel/v3.x/linux-3.18.44.tar.xz && \
-      tar xf linux-3.18.44.tar.xz linux-3.18.44/drivers/net/usb/ax88179_178a.c )
+# --- ax88179_178a (the only NIC) + asm-generic/vmlinux.lds.h: from mainline ---
+# Both ship as broken absolute symlinks in the tarball. vmlinux.lds.h is needed
+# by usr/initramfs_data.S and arch/arm64/kernel/vmlinux.lds.S.
+MAINLINE_31844=/tmp/linux-3.18.44
+if [ ! -f "$MAINLINE_31844/drivers/net/usb/ax88179_178a.c" ] || \
+   [ ! -f "$MAINLINE_31844/include/asm-generic/vmlinux.lds.h" ]; then
+    echo "   Downloading mainline 3.18.44 source (ax88179_178a.c, vmlinux.lds.h)..."
+    if [ ! -f /tmp/linux-3.18.44.tar.xz ]; then
+        ( cd /tmp && wget -q https://cdn.kernel.org/pub/linux/kernel/v3.x/linux-3.18.44.tar.xz )
+    fi
+    ( cd /tmp && tar xf linux-3.18.44.tar.xz \
+        linux-3.18.44/drivers/net/usb/ax88179_178a.c \
+        linux-3.18.44/include/asm-generic/vmlinux.lds.h )
 fi
 rm -f drivers/net/usb/ax88179_178a.c
-cp /tmp/linux-3.18.44/drivers/net/usb/ax88179_178a.c drivers/net/usb/ax88179_178a.c
+cp "$MAINLINE_31844/drivers/net/usb/ax88179_178a.c" drivers/net/usb/ax88179_178a.c
+if [ ! -s include/asm-generic/vmlinux.lds.h ]; then
+    rm -f include/asm-generic/vmlinux.lds.h
+    cp "$MAINLINE_31844/include/asm-generic/vmlinux.lds.h" include/asm-generic/vmlinux.lds.h
+    echo "   Restored include/asm-generic/vmlinux.lds.h from mainline."
+fi
 
 # --- hci_smd.c: real Qualcomm/CodeAurora GPLv2 source ---
 # Broken symlink; ported from a public MSM8953-era tree and kept in
