@@ -15,7 +15,7 @@ LOCK=/run/patch-drive-ws-conf.lock
 exec 9>"$LOCK"
 flock -n 9 || exit 0
 
-[[ -f "$CONF" ]] || { echo "patch-drive-ws-conf: $CONF not found" >&2; exit 1; }
+[[ -f "$CONF" ]] || { echo "patch-drive-ws-conf: $CONF not present yet -- nothing to patch (the watcher re-applies once unifi-core creates it)" >&2; exit 0; }
 
 if grep -qF "$MARKER" "$CONF"; then
     exit 0

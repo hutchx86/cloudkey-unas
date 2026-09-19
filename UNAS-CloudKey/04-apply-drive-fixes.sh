@@ -219,13 +219,18 @@ fix_nginx_drive_proxy() {
     log "nginx Drive sub_filter compat patch + self-healing watcher"
     install -m 0755 "$SCRIPT_DIR/lib/patch-drive-ws-conf.sh" /usr/local/sbin/patch-drive-ws-conf.sh
 
-    /usr/local/sbin/patch-drive-ws-conf.sh
+    # Not fatal: on a fresh install unifi-core may not have generated the conf yet
+    # (and it is regenerated on every restart), so a miss here must not abort the
+    # rest of the fix layer -- the watcher re-applies once the file appears.
+    /usr/local/sbin/patch-drive-ws-conf.sh \
+        || log "WARNING: patch-drive-ws-conf.sh failed (shared-runnable-drive.conf missing, or nginx -t failed) -- the watcher re-applies it when unifi-core regenerates the file"
 
     cat > /etc/systemd/system/drive-ws-conf-watch.path <<'EOF'
 [Unit]
 Description=Watch shared-runnable-drive.conf for unifi-core regeneration
 
 [Path]
+PathExists=/data/unifi-core/config/http/shared-runnable-drive.conf
 PathModified=/data/unifi-core/config/http/shared-runnable-drive.conf
 
 [Install]
