@@ -1,66 +1,32 @@
 #!/bin/bash
-# provision-all.sh
-#
-# Orchestrator: run from THIS PROJECT'S OWN environment (not on the device
-# itself) once the custom 3.18.44-btrfscustom kernel has ALREADY been built
-# (01-build-kernel.sh) and flashed (02-flash-kernel.sh) by hand -- that stays
-# the one deliberate manual step: a bad =y build already bricked this device
-# once, so this script never automates building/flashing it. Everything else
-# after that is this one command: sync 03-install-drive-stack.sh +
-# 04-apply-drive-fixes.sh + lib/ + fw_picked/ onto the device, run
-# 03-install-drive-stack.sh remotely (which itself calls
-# 04-apply-drive-fixes.sh at the end), reboot, wait for the device to come
-# back, and verify the final state via 05-verify.sh.
-#
-# This environment has no sshpass/expect/pexpect, so authentication goes
-# through lib/ssh_master.py's pty-based ControlMaster helper -- this script
-# drives that itself (establishing it fresh before syncing, and again after
-# the reboot, since the control socket dies with the device). You still need
-# the device's root password.
-#
-# Usage:
-#   DEVICE_HOST=root@10.10.10.61 DEVICE_PASSWORD='...' \
-#       UNAS-CloudKey/provision-all.sh
-#
-# Optional env vars: SSH_CONTROL_SOCKET (default /tmp/ck_ssh_ctrl.sock --
-# keep it short, AF_UNIX path limit, see lib/ssh_master.py), REMOTE_DIR
-# (default /root/cloudkey-unas-provision).
-#
-# Does NOT do: build/flash the kernel (manual, see above -- 01/02), or
-# first-time pool creation (a WebUI action for a device with no existing
-# pool -- "Add Drives"/PoolEditor has to be clicked through once by a human;
-# there is no pool yet to verify on a truly fresh device, see 05-verify.sh's
-# pool-mount check).
+# provision-all.sh -- orchestrator, run from this project's environment after the custom
+# 3.18.44-btrfscustom kernel has been built (01) and flashed (02) BY HAND. A bad =y build
+# already bricked this device once, so building/flashing is never automated here.
+# Syncs 03/04 + lib/ + fw_picked/ to the device, runs 03 remotely (which calls 04), reboots,
+# waits for a confirmed fresh boot, then verifies with 05. Auth uses lib/ssh_master.py
+# (pty ControlMaster) since this environment has no sshpass/expect.
+# Usage: DEVICE_HOST=root@<ip> DEVICE_PASSWORD='...' UNAS-CloudKey/provision-all.sh
+# Env: SSH_CONTROL_SOCKET (default /tmp/ck_ssh_ctrl.sock), REMOTE_DIR (default
+# /root/cloudkey-unas-provision). Does NOT create the first pool (WebUI action).
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-DEVICE_HOST="${DEVICE_HOST:?set DEVICE_HOST, e.g. root@10.10.10.61}"
+DEVICE_HOST="${DEVICE_HOST:?set DEVICE_HOST, e.g. root@<cloudkey-ip>}"
 DEVICE_PASSWORD="${DEVICE_PASSWORD:?set DEVICE_PASSWORD (used only to (re-)establish the SSH ControlMaster)}"
 SSH_CONTROL_SOCKET="${SSH_CONTROL_SOCKET:-/tmp/ck_ssh_ctrl.sock}"
 REMOTE_DIR="${REMOTE_DIR:-/root/cloudkey-unas-provision}"
 EXPECT_KERNEL="3.18.44-btrfscustom"
 
-# A full boot under the UNAS2B kernel/HAL identity spoof normally takes
-# ~40-50s until unifi-core/nginx are ready (was ~5-7 min before the
-# num_slots=1 boot-time fix in 04-apply-drive-fixes.sh). Polling early is
-# safe: a connection attempt against a device that's still down is refused at
-# the TCP level and never reaches sshd's auth stage, so it can't trigger
-# sshd's PerSourcePenalties backoff (which only tracks failed auth attempts
-# against a live sshd). REBOOT_WAIT_BEFORE_POLLING_SECS is a short grace
-# period for the `reboot` command to take effect -- without it, an immediate
-# poll can reconnect to the OLD, not-yet-dead SSH session and falsely report
-# "it's back". reboot_and_wait() also checks /proc/uptime to confirm a
-# genuinely fresh boot. Give up well past the high end of the normal range so
-# a genuinely stuck boot is reported as a real problem.
+# A full boot takes ~40-50s until unifi-core/nginx are ready; polling early is safe (a down
+# device refuses at TCP level, before sshd auth, so it can't trigger PerSourcePenalties).
 REBOOT_WAIT_BEFORE_POLLING_SECS=20
 REBOOT_WAIT_MAX_SECS=900
 REBOOT_POLL_INTERVAL_SECS=10
-# A fresh boot's /proc/uptime must be below this to be trusted as genuine.
-# Wide on purpose: only needs to catch a reconnect to a session up for
-# hours/days, not tightly bound the normal boot window.
+# REBOOT_WAIT_BEFORE_POLLING_SECS lets `reboot` take effect before polling; a reconnect
+# is only trusted as a fresh boot if /proc/uptime is below this (catches the OLD session).
 FRESH_BOOT_MAX_UPTIME_SECS=600
 
 log() { echo "[provision-all] $*"; }
@@ -68,12 +34,8 @@ fail() { echo "[provision-all] ERROR: $*" >&2; exit 1; }
 
 ssh_dev() { ssh -S "$SSH_CONTROL_SOCKET" "$DEVICE_HOST" "$@"; }
 
-# Idempotent: ssh_master.py always removes a stale socket file first and
-# re-authenticates fresh, so this is safe to call whether or not a socket
-# already exists. Non-fatal on its own -- returns the underlying exit
-# status so a caller in a polling loop (the device isn't up yet, which is
-# expected and NOT an error) can tell that apart from establish_control_socket()
-# below's fatal use at the start of the run.
+# Idempotent: ssh_master.py removes a stale socket and re-authenticates fresh. Non-fatal --
+# returns the underlying status so a polling caller can tell "not up yet" from a real failure.
 try_establish_control_socket() {
     python3 "$SCRIPT_DIR/lib/ssh_master.py" "$DEVICE_HOST" "$DEVICE_PASSWORD" "$SSH_CONTROL_SOCKET" >/dev/null 2>&1
 }
@@ -103,9 +65,7 @@ EOF
 }
 
 ensure_remote_rsync() {
-    # Stock UniFi firmware does NOT ship rsync. This script's artifact sync,
-    # 03's module restore, and 02-flash-kernel.sh's module install all use it,
-    # so a genuinely fresh device would otherwise fail here.
+    # Stock UniFi firmware lacks rsync, needed by this script's sync, 03's module restore, and 02's install.
     if ssh_dev "command -v rsync >/dev/null 2>&1"; then
         return 0
     fi
@@ -117,22 +77,14 @@ sync_artifacts() {
     local modules_dir="$PROJECT_DIR/fw_picked/kernel-modules-$EXPECT_KERNEL"
     log "syncing UNAS-CloudKey/ + fw_picked/debs-build/ to $DEVICE_HOST:$REMOTE_DIR"
     ssh_dev "mkdir -p '$REMOTE_DIR/UNAS-CloudKey/lib/wrappers' '$REMOTE_DIR/fw_picked/debs-build'"
-    # --chown=root:root: rsync -a otherwise preserves the source's numeric
-    # uid/gid, which on the device can coincidentally map to a real, unrelated
-    # Drive user account. Harmless over ssh (always root), but avoid leaving
-    # misleading ownership on the device. Mirror the local sibling layout
-    # (UNAS-CloudKey/ + fw_picked/ under $REMOTE_DIR) so 03's
-    # $SCRIPT_DIR/../fw_picked/... defaults resolve correctly.
+    # --chown=root:root avoids preserving source numeric uid/gid (which can map to a real Drive
+    # user); mirror the local layout so 03's $SCRIPT_DIR/../fw_picked/... defaults resolve.
     rsync -e "ssh -S $SSH_CONTROL_SOCKET" -a --chown=root:root --exclude 'ssh_master.py' \
         "$SCRIPT_DIR/" "$DEVICE_HOST:$REMOTE_DIR/UNAS-CloudKey/"
     rsync -e "ssh -S $SSH_CONTROL_SOCKET" -a --chown=root:root \
         "$PROJECT_DIR/fw_picked/debs-build/" "$DEVICE_HOST:$REMOTE_DIR/fw_picked/debs-build/"
-    # The kernel module tree is optional: it only exists after a kernel build
-    # in this checkout. On a re-provision of an already-flashed device from a
-    # fresh clone there is nothing local to send, and 03 uses whatever is
-    # already under the device's /lib/modules/$EXPECT_KERNEL/ (it only needs
-    # the local tree as a self-heal source when that is missing). Syncing a
-    # non-existent dir would otherwise abort the whole run under `set -e`.
+    # The module tree only exists after a local kernel build; on a re-provision from a fresh
+    # clone there's nothing to send, and 03 uses the device's existing /lib/modules/$EXPECT_KERNEL/.
     if [[ -d "$modules_dir" ]]; then
         log "syncing kernel module tree $modules_dir"
         ssh_dev "mkdir -p '$REMOTE_DIR/fw_picked/kernel-modules-$EXPECT_KERNEL'"
@@ -151,8 +103,7 @@ run_install() {
 
 reboot_and_wait() {
     log "rebooting $DEVICE_HOST"
-    # backgrounded on the remote end so the reboot itself doesn't race the
-    # ssh command's own connection teardown.
+    # Backgrounded remotely so the reboot doesn't race the ssh command's own teardown.
     ssh_dev "nohup reboot >/dev/null 2>&1 & sleep 1" || true
     ssh -O exit -S "$SSH_CONTROL_SOCKET" "$DEVICE_HOST" 2>/dev/null || true
 
@@ -163,11 +114,8 @@ reboot_and_wait() {
     local uptime_secs
     while (( waited < REBOOT_WAIT_MAX_SECS )); do
         if try_establish_control_socket; then
-            # A successful connection alone isn't proof of a genuine fresh
-            # boot -- it could be a reconnect to the OLD session if the
-            # `reboot` command hadn't actually torn it down yet. Confirm via
-            # /proc/uptime: a stale old session shows hours/days, an easy,
-            # huge gap against any plausible fresh-boot uptime.
+            # A successful connection isn't proof of a fresh boot -- it could be a reconnect to
+            # the OLD session; confirm via /proc/uptime (a stale session shows hours/days).
             uptime_secs="$(ssh_dev "cut -d. -f1 /proc/uptime" 2>/dev/null || echo 999999)"
             if [[ "$uptime_secs" =~ ^[0-9]+$ ]] && (( uptime_secs < FRESH_BOOT_MAX_UPTIME_SECS )); then
                 log "  SSH is back up after ~${waited}s (confirmed fresh boot, uptime ${uptime_secs}s)"
@@ -189,19 +137,14 @@ main() {
     sync_artifacts
     run_install
     reboot_and_wait
-    # Reuse the control socket we already have -- source 05-verify.sh
-    # rather than exec-ing it, so its verify_final_state() call runs
-    # against the same DEVICE_HOST/SSH_CONTROL_SOCKET without needing to
-    # re-establish a connection (and without needing DEVICE_PASSWORD again).
+    # Reuse the existing control socket -- source 05-verify.sh rather than exec it, so
+    # verify_final_state() runs against the same DEVICE_HOST/SSH_CONTROL_SOCKET without reconnecting.
     # shellcheck source=05-verify.sh
     source "$SCRIPT_DIR/05-verify.sh"
     verify_final_state
 }
 
-# Guarded so this script can be `source`d to test/re-run an individual
-# step in isolation without running the whole provisioning flow -- no
-# effect on normal `./provision-all.sh` execution, same pattern as
-# 03-install-drive-stack.sh and 04-apply-drive-fixes.sh.
+# Guarded so this script can be `source`d to re-run one step in isolation; no effect on normal execution.
 if ! (return 0 2>/dev/null); then
     main "$@"
 fi

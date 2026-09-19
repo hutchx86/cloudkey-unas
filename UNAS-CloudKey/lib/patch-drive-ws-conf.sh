@@ -1,19 +1,10 @@
 #!/bin/bash
 # Installed as /usr/local/sbin/patch-drive-ws-conf.sh.
 #
-# unifi-core regenerates /data/unifi-core/config/http/shared-runnable-drive.conf
-# from its own internal template on every service restart AND every device
-# reboot, silently wiping any hand-edited sub_filter/location additions.
-# This script re-applies the Drive-crash fix and is meant to run every time
-# that file changes, via the drive-ws-conf-watch.path/.service pair this
-# project installs alongside it.
-#
-# Idempotent: guarded by a marker comment, safe to run any number of times.
-# LOCKED: a real race was hit here -- running this manually while the
-# path-watcher was also enabled let both invocations see "no marker yet" and
-# both insert, duplicating every sub_filter/location block and breaking
-# `nginx -t`. Always assume the watcher will fire on any manual edit to the
-# target file.
+# unifi-core regenerates shared-runnable-drive.conf from its template on every
+# restart/reboot, wiping the Drive-crash sub_filter/location fix; this reapplies
+# it, triggered by drive-ws-conf-watch.path/.service. Idempotent via a marker;
+# flocked because the watcher can race a manual run into double-inserting.
 
 set -euo pipefail
 
@@ -30,8 +21,7 @@ if grep -qF "$MARKER" "$CONF"; then
     exit 0
 fi
 
-# 1. Inject the general sub_filter block right after the opening brace of
-#    the existing `location /proxy/drive/ {` block.
+# 1. Inject the general sub_filter block just after the `location /proxy/drive/ {` line.
 awk -v marker="$MARKER" '
     /location \/proxy\/drive\/ \{/ {
         print
@@ -52,13 +42,8 @@ awk -v marker="$MARKER" '
     { print }
 ' "$CONF" > "$CONF.tmp"
 
-# 2. Insert the more-specific exact-match block for the whole-object-null
-#    mydrive endpoint (nginx picks the longest/most specific matching
-#    location, so `location =` wins over the `location /proxy/drive/`
-#    prefix for this one path), immediately after the matching closing
-#    brace of the `location /proxy/drive/` block -- tracked by brace depth
-#    rather than a blind end-of-file append, so this stays inside whatever
-#    context (server{}) actually contains it.
+# 2. Insert the exact-match block for the whole-object-null mydrive endpoint
+#    (`location =` beats the `/proxy/drive/` prefix); brace-depth tracked, not EOF-appended.
 awk '
     /location \/proxy\/drive\/ \{/ { in_block=1; depth=0 }
     in_block {

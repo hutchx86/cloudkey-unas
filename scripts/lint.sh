@@ -1,20 +1,13 @@
 #!/bin/bash
-# lint.sh
+# lint.sh -- project verification: bash -n on every shell script, shellcheck
+# (severity >= warning) when available, and a byte-compile of the Python helper.
+# There is no automated device-side test suite; behaviour is verified separately
+# via UNAS-CloudKey/05-verify.sh.
 #
-# Project lint: syntax-check every shell script and the Python helper, and
-# run shellcheck when it's available. This is the project's canonical
-# verification command -- there is no automated test suite for device-side
-# behavior, which is verified on the Cloud Key via 05-verify.sh.
+# Usage: scripts/lint.sh   (exit 0 if all passed, 1 otherwise)
 #
-# Usage:
-#   scripts/lint.sh
-#
-# Exit status: 0 if everything passed, 1 otherwise.
-#
-# The shellcheck tool is not installed by default in this environment. Install it
-# however suits the host (distro package `shellcheck`, or
-# `pip install shellcheck-py`); without it this script still runs `bash -n`
-# on every script but prints a warning that the deeper check was skipped.
+# The shellcheck tool is optional; install the distro `shellcheck` package or
+# `pip install shellcheck-py`, otherwise only bash -n runs (with a warning).
 
 set -euo pipefail
 
@@ -25,8 +18,7 @@ failures=0
 
 log() { echo "[lint] $*"; }
 
-# --- Collect shell scripts (tracked or not) from the pipeline, scripts/, and
-#     the repo root (install.sh) ---
+# --- Collect shell scripts from UNAS-CloudKey/, scripts/, and the repo root ---
 mapfile -t SHELL_SCRIPTS < <(
     {
         find "$PROJECT_DIR/UNAS-CloudKey" "$PROJECT_DIR/scripts" \

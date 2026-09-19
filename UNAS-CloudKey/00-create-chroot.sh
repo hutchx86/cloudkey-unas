@@ -1,28 +1,13 @@
 #!/bin/bash
-# 00-create-chroot.sh
+# 00-create-chroot.sh -- create the bullseye cross-compile chroot that
+# 01-build-kernel.sh must run inside (bullseye's gcc 10.2.1 exactly matches
+# the CloudKey's kernel build). Run once on the local build machine, as root.
 #
-# Sets up the bullseye cross-compile chroot that 01-build-kernel.sh must run
-# inside. Run once on the local build machine (not on the Cloud Key, not in
-# this project's own environment); root required.
-#
-# The CloudKey's kernel was built with gcc 10.2.1, and modern host compilers
-# (gcc 12+) will not build this tree cleanly. Debian bullseye ships gcc
-# 10.2.1-6, an exact match.
-#
-# Usage:
-#   sudo ./00-create-chroot.sh [chroot-path] [build-bind-mount-source]
-#
-#   chroot-path              default: /home/$SUDO_USER/bullseye-chroot
-#   build-bind-mount-source  default: /home/$SUDO_USER/ck-kernel-build
-#                            (created if missing) -- the directory you work in
-#                            day to day; it appears as /build INSIDE the
-#                            chroot. Copy UNAS-CloudKey/ in here, along with
-#                            the tarball/verified-running config/live DTB that
-#                            01-build-kernel.sh also needs.
-#
-# Idempotent: safe to re-run. Skips debootstrap if the chroot already looks
-# valid, re-does the bind mount if not mounted, and always re-runs the
-# package install (apt is idempotent about already-installed packages).
+# Usage: sudo ./00-create-chroot.sh [chroot-path] [build-bind-mount-source]
+#   chroot-path:             default /home/$SUDO_USER/bullseye-chroot
+#   build-bind-mount-source: default /home/$SUDO_USER/ck-kernel-build, mounted as /build
+#                            inside the chroot; copy UNAS-CloudKey/ + 01's inputs there.
+# Idempotent: skips debootstrap if the chroot is valid, re-does the bind mount if unmounted.
 
 set -euo pipefail
 
@@ -63,16 +48,8 @@ else
     mount --bind "$BUILD_DIR" "$CHROOT_PATH/build"
 fi
 
-# Matches the package list 01-build-kernel.sh's check_prerequisites() expects
-# (crossbuild-essential-arm64 build-essential bc bison flex libssl-dev
-# libelf-dev dwarves kmod cpio rsync python3 device-tree-compiler), plus:
-#   git            KERNEL_SRC_REPO is cloned, not fetched as a tarball
-#   perl           perl -0pi is used to insert the statx prototypes
-#   python3        the statx(2) backport patches are python3 heredocs
-#   abootimg       package_boot_image()'s new-boot.img
-#   openssh-client manual scp/ssh inside the chroot
-# python3/perl are NOT guaranteed by a minimal debootstrap, so install them
-# explicitly rather than assuming they come in with the base system.
+# Packages 01-build-kernel.sh's check_prerequisites() expects, plus git (cloned repo),
+# perl/python3 (statx work), abootimg, openssh-client; python3/perl aren't guaranteed by debootstrap.
 log "installing cross-compile toolchain and kernel build dependencies"
 chroot "$CHROOT_PATH" bash -c '
     export DEBIAN_FRONTEND=noninteractive

@@ -1,35 +1,18 @@
 #!/bin/bash
-# repack-firmware-package.sh
+# repack-firmware-package.sh -- rebuild an installable .deb for a package that
+# shipped inside the extracted firmware image but was never picked into
+# fw_picked/debs-build/. Reads metadata + copies bytes from the firmware's own
+# dpkg database and wraps them with the host's dpkg-deb. Does NOT execute any of
+# the package's files (no chroot/qemu, even for arm64); safe on any host arch.
 #
-# Rebuilds an installable .deb for a package that genuinely shipped inside
-# the extracted firmware image (fw_extract/) but was never picked into
-# fw_picked/debs-build/ during the original extraction pass. Does NOT
-# execute any of the package's own files (no chroot, no qemu-user-static
-# needed even for arm64 binaries) -- it only reads metadata + copies bytes
-# out of the firmware's own dpkg database, then calls the host's native
-# dpkg-deb to wrap them. Safe to run on any host architecture.
+# Usage:    scripts/repack-firmware-package.sh <package-name> [extracted-root]
+# Default:  extracted-root is fw_extract/fwupdate.bin.extracted/squashfs-root
+#           (relative to this script's parent dir); output goes to
+#           fw_picked/debs-build/<package>_<version>_<arch>.deb.
 #
-# Background: this is how wsdd, wsdd-server, unifi-rclone, and
-# unifi-drive-rclone were recovered -- all four were installed in the original
-# firmware image (/var/lib/dpkg/status confirms it) but fw_picked/debs-build/
-# never got a copy of them.
-#
-# Usage:
-#   scripts/repack-firmware-package.sh <package-name> [extracted-root]
-#
-# extracted-root defaults to fw_extract/fwupdate.bin.extracted/squashfs-root
-# relative to this script's parent directory. Output lands in
-# fw_picked/debs-build/<package>_<version>_<arch>.deb.
-#
-# What this does NOT handle (check by hand for these before trusting the
-# result -- see the printed control file and file list for a sanity check):
-#   - Packages using triggers (Triggers-Pending/Triggers-Awaited) --
-#     uncommon for firmware-bundled leaf packages, not seen in this project
-#     so far.
-#   - Packages whose full doc/changelog/man files were pruned from the
-#     firmware image at build time (harmless to skip -- purely
-#     documentation -- but this script will print a warning per missing
-#     file rather than silently continuing, so you notice).
+# NOT handled (check by hand -- the printed control file/list shows a sanity
+# check): packages using triggers, and doc/changelog/man files pruned from the
+# image (harmless; each missing file prints a warning rather than being silent).
 
 set -euo pipefail
 
@@ -57,8 +40,7 @@ VERSION=$(echo "$CONTROL_STANZA" | sed -n 's/^Version: //p')
 ARCH=$(echo "$CONTROL_STANZA" | sed -n 's/^Architecture: //p')
 [[ -n "$VERSION" && -n "$ARCH" ]] || { echo "ERROR: could not parse Version/Architecture for $PKG" >&2; exit 1; }
 
-# Multi-Arch: same packages keep their dpkg info files arch-suffixed
-# (e.g. libubnt:arm64.list); single-arch packages use the bare name.
+# Multi-Arch: same packages arch-suffix their dpkg info files (e.g. libubnt:arm64.list); single-arch use the bare name.
 info_file() {
     local suffix="$1" f
     f="$INFO_DIR/$PKG.$suffix"
@@ -101,10 +83,7 @@ for extra in conffiles postinst preinst postrm prerm; do
 done
 
 mkdir -p "$OUT_DIR"
-# Debian filename convention drops the epoch (the "N:" prefix on Version,
-# if any) from the filename -- dpkg-deb doesn't care either way since the
-# real Package/Version come from the control file, not the filename, but
-# match convention (and avoid a literal ':' in the filename) anyway.
+# Debian convention drops the Version epoch ("N:") from the filename; dpkg-deb reads version from control, but match convention (and avoid ':' in the name).
 FILENAME_VERSION="${VERSION#*:}"
 OUT_FILE="$OUT_DIR/${PKG}_${FILENAME_VERSION}_${ARCH}.deb"
 dpkg-deb --build --root-owner-group "$PKGROOT" "$OUT_FILE"

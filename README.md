@@ -131,7 +131,7 @@ and is safe to re-run. Run it from the repository root on the Debian build host
 
 **What it asks**
 
-- The Cloud Key address (e.g. `10.10.10.61`, or `user@host`) and its root
+- The Cloud Key address (e.g. `<cloudkey-ip>`, or `user@host`) and its root
   password.
 - A typed `yes` before the kernel is flashed — the one destructive step.
 

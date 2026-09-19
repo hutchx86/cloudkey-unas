@@ -1,25 +1,8 @@
 #!/bin/bash
-# install.sh
-#
-# Single entry point for putting Ubiquiti's genuine UniFi Drive stack onto a
-# UniFi Cloud Key Gen 2 Plus. Runs on a (possibly virgin) Debian build host
-# and drives the whole pipeline in order:
-#
-#   1. install any missing host dependencies (apt)
-#   2. ask for the Cloud Key address + root password
-#   3. read the device-derived kernel inputs (verified-running.config, live
-#      DTB, and the stock boot partition for abootimg -x)
-#   4. regenerate the pinned Ubiquiti packages (scripts/fetch-firmware-debs.sh)
-#   5. create the bullseye chroot            (UNAS-CloudKey/00-create-chroot.sh)
-#   6. build the custom kernel in the chroot (UNAS-CloudKey/01-build-kernel.sh)
-#   7. flash it (UNAS-CloudKey/02-flash-kernel.sh) -- THIS asks you to type
-#      "yes" before it writes anything, and only flashes when needed
-#   8. reboot into the new kernel, then provision + verify the Drive stack
-#      (UNAS-CloudKey/provision-all.sh -> 03/04/05)
-#
-# Safe to re-run: every stage is idempotent. If the device already runs the
-# custom kernel, steps 5-8's kernel part is skipped automatically; pass
-# --rebuild-kernel to force it.
+# install.sh -- put Ubiquiti's genuine UniFi Drive stack onto a Cloud Key Gen 2
+# Plus, driven end to end from a Debian build host. Every stage is idempotent;
+# the kernel stages (00/01/02) are skipped when the device already runs the
+# custom kernel unless --rebuild-kernel is given.
 #
 # Usage:
 #   ./install.sh [--rebuild-kernel] [--yes]
@@ -34,7 +17,7 @@
 #   -h, --help         Show this text.
 #
 # Environment overrides (all optional):
-#   DEVICE_HOST          e.g. root@10.10.10.61 (bare IP is accepted; prompted if unset)
+#   DEVICE_HOST          e.g. root@<cloudkey-ip> (bare IP is accepted; prompted if unset)
 #   DEVICE_PASSWORD      the device's root password (prompted if unset)
 #   KERNEL_SRC_REPO      kernel source repo to clone; defaults to the
 #                        ckg2plus-kernel-src companion repo
@@ -147,7 +130,7 @@ prompt_device() {
 
     if [[ -z "${DEVICE_HOST:-}" ]]; then
         [[ -r /dev/tty ]] || die "DEVICE_HOST is not set and there is no terminal to prompt on"
-        read -r -p "Cloud Key address (e.g. root@10.10.10.61): " DEVICE_HOST < /dev/tty
+        read -r -p "Cloud Key address (e.g. root@<cloudkey-ip>): " DEVICE_HOST < /dev/tty
     fi
     [[ -n "$DEVICE_HOST" ]] || die "no device address given"
     # Accept a bare IP/hostname and default to the root user the pipeline expects.
@@ -300,8 +283,7 @@ main() {
     kver="$(device_kernel)"
     log "device is running kernel: ${kver:-<unknown>}"
 
-    # Fetch the pinned packages early so a firmware-API problem fails before
-    # the (long) kernel build rather than after it.
+    # Fetch packages early so a firmware-API failure precedes the long kernel build.
     ensure_debs
 
     if [[ "$kver" == "$EXPECT_KERNEL" && $REBUILD_KERNEL -eq 0 ]]; then

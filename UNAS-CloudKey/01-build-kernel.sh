@@ -1,72 +1,18 @@
 #!/bin/bash
 #
-# build-cloudkey-kernel.sh
+# 01-build-kernel.sh
 #
-# Rebuilds the UniFi CloudKey Plus (APQ8053) 3.18.44-ui-qcom kernel from
-# Ubiquiti's GPL source tarball, with the minimum set of changes needed to
-# get a bootable custom kernel with a working network interface. Runs
-# fully unattended once prerequisites are in place -- no manual editing
-# or confirmation prompts.
+# Builds the custom CloudKey kernel (3.18.44-btrfscustom) inside the bullseye
+# chroot from 00-create-chroot.sh. Runs unattended. Patches Ubiquiti's GPL
+# tree for the smp2p alignment fault, the log2.h const/noreturn error, and
+# the statx(2) syscall unifi-drive needs.
 #
-# Besides config changes, this includes three genuine SOURCE PATCHES:
-#   1. An alignment-fault kernel-panic fix in drivers/soc/qcom/smp2p.c's
-#      smp2p_init_header() (see the patch section below).
-#   2. A fix for a contradictory __attribute__((const, noreturn)) in
-#      include/linux/log2.h that GCC 5+ correctly flags as an error --
-#      harmless as a warning for this kernel build itself. Kept because
-#      it's a real, trivially-fixed upstream bug in this vendor tree.
-#   3. A backport of the statx(2) syscall (upstream since Linux 4.11;
-#      this 2014-era tree predates it entirely). unifi-drive is a Go
-#      binary that calls statx() directly with no ENOSYS fallback, so
-#      every Drive file/folder listing 500'd until this was added. The
-#      backport covers STATX_BASIC_STATS only -- no btime/attributes/
-#      mnt_id -- and reuses the existing vfs_fstatat()/struct kstat path
-#      completely unmodified, so no other filesystem code is touched.
-# All three are real bugs/omissions in Ubiquiti's own vendor tree, not
-# introduced by this script.
-#
-# WHY THIS SCRIPT EXISTS:
-# Ubiquiti's GPL tarball has broken absolute symlinks left over from their
-# internal build host (paths like /home/inaro/src/github.com/...), and
-# ships a generic .config for the whole apq8053 product family rather than
-# one for your exact hardware. This script starts from YOUR verified
-# running config (from /proc/config.gz on the device) and patches only
-# what's necessary to make the tarball's source tree buildable against it.
-#
-# PREREQUISITES BEFORE RUNNING THIS SCRIPT:
-#   1. The kernel source, either cloned via KERNEL_SRC_REPO (the browsable
-#      linux-qcom-apq8053-3.18.44-ui-qcom repo) OR the kernel source tarball
-#      linux-qcom-apq8053-3.18.44-ui-qcom.tar extracted from Ubiquiti's GPL
-#      bundle (UCKP-*-GPL.tar.gz). For the tarball path, if it isn't already
-#      in the working directory this script will (a) pull it out of a local
-#      bundle if one is present, or (b) fetch it from $KERNEL_SRC_URL (a
-#      GitHub Release asset you host), verified against KERNEL_SRC_SHA256.
-#   2. Your device's ACTUAL running .config, pulled with:
-#      ssh root@<cloudkey-ip> "zcat /proc/config.gz" > verified-running.config
-#      (CloudKey Plus and CloudKey G2 were checked and produced an
-#      identical config -- so this one file should be valid for either.)
-#   3. A Debian bullseye environment (chroot, container, or VM): the kernel
-#      was originally built with gcc 10.2.1, and modern host compilers
-#      (gcc 12+) will not build this tree cleanly. Bullseye ships gcc
-#      10.2.1-6, an exact match. Quick WSL2 setup without Docker:
-#        sudo apt install debootstrap
-#        sudo debootstrap bullseye ~/bullseye-chroot http://deb.debian.org/debian/
-#        sudo mount --bind ~/ck-kernel-build ~/bullseye-chroot/build
-#        sudo chroot ~/bullseye-chroot /bin/bash
-#   4. Your extracted, decompiled live DTB (cloudkey-live.dtb), pulled with:
-#      ssh root@<cloudkey-ip> "cat /sys/firmware/fdt" > cloudkey-live.dtb
-#      Used as-is (never recompiled) because the tarball's per-board .dts
-#      files are also broken symlinks with no real source; the device's
-#      live, already-working DTB is the only trustworthy hardware description.
-#
-# Run this script from inside the bullseye chroot/container, from the
-# directory containing the tarball and the two files above.
-#
-# custom-drivers/ is referenced via $SCRIPT_DIR (this file's own
-# directory). Copy (or rsync) this whole UNAS-CloudKey/ directory into the
-# chroot's bind-mounted /build directory before running inside the chroot,
-# so $SCRIPT_DIR/custom-drivers resolves correctly. See 00-create-chroot.sh
-# for setting up the chroot itself.
+# Run from the working dir containing: the kernel source (KERNEL_SRC_REPO, or
+# a local tarball / UCKP-*-GPL.tar.gz), verified-running.config (device
+# `zcat /proc/config.gz`), cloudkey-live.dtb (device `/sys/firmware/fdt`), and
+# bootimg.cfg + initrd.img (abootimg -x on the stock boot partition). Writes
+# new-boot.img and modules-staging/; flash with 02-flash-kernel.sh.
+# custom-drivers/ is read via $SCRIPT_DIR, so run from a copy of UNAS-CloudKey/.
 # ---------------------------------------------------------------------
 
 set -euo pipefail
@@ -81,22 +27,14 @@ LIVE_DTB="cloudkey-live.dtb"
 LOCALVERSION_SUFFIX="-btrfscustom"
 JOBS="$(nproc)"
 
-# Optional source acquisition. Highest priority: KERNEL_SRC_REPO -- if set,
-# the tree is `git clone`d from it into $SRC_DIR. Otherwise the kernel
-# tarball is resolved, in order, from:
-#   1. an existing local $TARBALL;
-#   2. a local Ubiquiti GPL bundle ($KERNEL_GPL_BUNDLE, else a UCKP-*-GPL.tar.gz
-#      in the working dir), from which the inner kernel tar is extracted;
-#   3. KERNEL_SRC_URL (a GitHub Release asset you host) -- verified against
-#      KERNEL_SRC_SHA256 (defaults to the pristine kernel tar shipped inside
-#      Ubiquiti's UCKP-2.5.11-GPL bundle).
+# Source acquisition: KERNEL_SRC_REPO is cloned; else $TARBALL is resolved from
+# a local file, a UCKP-*-GPL.tar.gz bundle, or KERNEL_SRC_URL (verified by SHA256).
 KERNEL_SRC_REPO="${KERNEL_SRC_REPO:-}"
 KERNEL_SRC_URL="${KERNEL_SRC_URL:-}"
 KERNEL_SRC_SHA256="${KERNEL_SRC_SHA256:-d1d733355c29919cc3d2ce461bcf2de8e5e4485b3c2dc6ceef59d5cef58e3663}"
 KERNEL_GPL_BUNDLE="${KERNEL_GPL_BUNDLE:-}"
 
-# Pull $TARBALL out of a Ubiquiti GPL bundle. Returns nonzero if the given
-# file is not a bundle containing it (e.g. it is already the kernel tar).
+# Pull $TARBALL out of a Ubiquiti GPL bundle; nonzero if the file is not one.
 extract_kernel_from_bundle() {
     local bundle="$1" inner
     inner="$(tar tf "$bundle" 2>/dev/null | grep -E "(^|/)${TARBALL}\$" | head -n1 || true)"
@@ -109,11 +47,10 @@ extract_kernel_from_bundle() {
 }
 
 fetch_source_tarball() {
-# A source repo (KERNEL_SRC_REPO) is cloned in extract_source() instead.
+# No-op when KERNEL_SRC_REPO is set (extract_source() clones it instead).
 [[ -n "$KERNEL_SRC_REPO" ]] && return 0
-# If the kernel tar is already here, nothing to do. If it can't be resolved
-# from anywhere, fall through so check_prerequisites can print its normal
-# "required file not found" message.
+# No-op if $TARBALL exists; otherwise fall through so check_prerequisites
+# reports the missing file.
 [[ -f "$TARBALL" ]] && return 0
 
 local bundle="${KERNEL_GPL_BUNDLE:-}"
@@ -163,9 +100,8 @@ mv "$dl" "$TARBALL"
 check_prerequisites() {
 fetch_source_tarball
 # ---- Sanity checks ----
-# The kernel source is either a local $TARBALL (possibly fetched above) or a
-# KERNEL_SRC_REPO to clone; RUNNING_CONFIG/LIVE_DTB always come from the
-# device.
+# Source is $TARBALL or a KERNEL_SRC_REPO clone; RUNNING_CONFIG/LIVE_DTB come
+# from the device.
 local required=("$RUNNING_CONFIG" "$LIVE_DTB")
 if [[ -z "$KERNEL_SRC_REPO" ]]; then
     required=("$TARBALL" "${required[@]}")
@@ -202,10 +138,8 @@ fi
 
 extract_source() {
 # ---- 1. Clean extraction ----
-# Always start from a fresh tree. Ubiquiti's tarball ships the results of
-# THEIR OWN internal build (vmlinux, Module.symvers, .tmp_vmlinux1/2, etc.);
-# building on top without a clean start lets make silently reuse stale
-# objects built against a different .config.
+# Start fresh: the tarball ships Ubiquiti's own build artifacts, and reusing
+# them lets make silently mix objects built against a different .config.
 echo "== Removing any existing extracted source tree =="
 rm -rf "$SRC_DIR"
 
@@ -230,15 +164,8 @@ make mrproper
 
 fix_broken_symlinks() {
 # ---- 2. Fix broken symlinks ----
-# The tarball contains ~23 broken absolute symlinks pointing at Ubiquiti's
-# internal build host. Two categories:
-#   a) Driver source for hardware-specific accessories (front display,
-#      rackmount/power-source detection, GPIO battery, Bluetooth HCI-SMD)
-#      -- genuinely missing from the GPL drop. We disable these in .config
-#      and remove their Kconfig/Makefile references so the build skips them.
-#   b) ax88179_178a.c (the USB ethernet chip driver -- this is your ONLY
-#      network interface, not optional!) -- upstream/generic ASIX driver
-#      code, so we replace it with the real file from mainline 3.18.44.
+# The tarball has ~23 absolute symlinks into Ubiquiti's build host. Source-less
+# accessory drivers are disabled; ax88179_178a.c (the only NIC) comes from mainline.
 echo "== Fixing broken symlinks =="
 
 # --- ax88179_178a: pull the real file from mainline ---
@@ -252,22 +179,8 @@ rm -f drivers/net/usb/ax88179_178a.c
 cp /tmp/linux-3.18.44/drivers/net/usb/ax88179_178a.c drivers/net/usb/ax88179_178a.c
 
 # --- hci_smd.c: real Qualcomm/CodeAurora GPLv2 source ---
-# drivers/bluetooth/hci_smd.c is a broken symlink pointing at Ubiquiti's
-# own vendoring of a generic Qualcomm/CodeAurora msm-3.18.x kernel tree.
-# That is genuine upstream-vendor GPLv2 source (Code Aurora Forum / Maxim
-# Krasnyansky / Marcel Holtmann, see the file's own header), ported here
-# from a public MSM8953-era Android kernel tree (same SoC family and kernel
-# version) and adapted to this tree's actual headers (see hci_smd.c's own
-# port-note comment for the small API differences fixed: an hci_recv_frame()
-# argument, a removed hdev->destruct field, and a kernel_param constness
-# change -- none SMD-specific).
-#
-# Unlike ax88179_178a.c this is NOT re-fetched from the network each run --
-# it needed real porting work, so the already-adapted file is kept in
-# custom-drivers/ (outside $SRC_DIR, so the clean extraction never touches
-# it). drivers/bluetooth/{Kconfig,Makefile} already have the correct
-# CONFIG_BT_HCISMD entries straight from extraction -- only the single
-# broken .c symlink needed replacing.
+# Broken symlink; ported from a public MSM8953-era tree and kept in
+# custom-drivers/ (outside $SRC_DIR) because it needed real porting work.
 CUSTOM_BT_DIR="$SCRIPT_DIR/custom-drivers"
 if [ ! -f "$CUSTOM_BT_DIR/hci_smd.c" ]; then
     echo "ERROR: $CUSTOM_BT_DIR/hci_smd.c not found." >&2
@@ -283,19 +196,14 @@ cp "$CUSTOM_BT_DIR/hci_smd.c" drivers/bluetooth/hci_smd.c
 echo "   Reinstated hci_smd.c from $CUSTOM_BT_DIR (survives future reruns)."
 
 # --- ubnt accessory drivers ---
-# drivers/misc/ubnt/{Kconfig,Makefile,cloudkey-power.c,cloudkey-rackmount.c}
-# are broken symlinks pointing at Ubiquiti's internal build host, with no
-# real source in the GPL release. cloudkey-power.c (the "ubnt,ck-powersource"
-# driver providing the "mains" power_supply -- PoE/USB-C/QC detection) has
-# since been reconstructed from stock firmware disassembly;
-# cloudkey-rackmount.c has not, so it stays disabled exactly as before.
+# Broken symlinks with no real source. cloudkey-power.c is reconstructed
+# (reinstated below); cloudkey-rackmount.c stays disabled.
 rm -f drivers/misc/ubnt/Kconfig drivers/misc/ubnt/Makefile \
       drivers/misc/ubnt/cloudkey-power.c drivers/misc/ubnt/cloudkey-rackmount.c
 rmdir drivers/misc/ubnt 2>/dev/null || true
 
 # --- cloudkey-power.c: reconstructed driver, reinstated after the wipe above ---
-# Kept outside $SRC_DIR for the same reason as the other custom drivers:
-# `rm -rf "$SRC_DIR"` at the top must never touch it.
+# Kept outside $SRC_DIR so `rm -rf "$SRC_DIR"` never touches it.
 CUSTOM_UBNT_DIR="$SCRIPT_DIR/custom-drivers"
 if [ ! -f "$CUSTOM_UBNT_DIR/cloudkey-power.c" ]; then
     echo "ERROR: $CUSTOM_UBNT_DIR/cloudkey-power.c not found." >&2
@@ -326,23 +234,13 @@ config UBNT_CLOUDKEY_POWERSOURCE
 	  unreconstructed and disabled -- see the .config sanity section
 	  below.
 KCONFIG_EOF
-# NOTE: drivers/misc/Kconfig's "source drivers/misc/ubnt/Kconfig" and
-# drivers/misc/Makefile's ubnt/ line are already active from the fresh
-# extraction and work as-is now that the files above exist again -- no sed.
+# drivers/misc/{Kconfig,Makefile} already reference ubnt/ and work as-is; no sed.
 echo "   Reinstated cloudkey-power.c from $CUSTOM_UBNT_DIR (survives future reruns)."
 echo "   cloudkey-rackmount.c remains unreconstructed -- CONFIG_UBNT_CLOUDKEY_RACKMOUNT stays disabled."
 
 # --- ubnthal: /proc/ubnthal identity emulation ---
-# drivers/misc/ubnthal/ doesn't exist anywhere in the GPL tarball, not even
-# as a broken symlink. Several UniFi OS userspace services (notably
-# unifi-drive's storageService) read hardware identity from
-# /proc/ubnthal/{system.info,board}; this from-scratch stub creates those
-# two read-only proc entries reporting a UNAS Pro identity (sysid 0xea51 /
-# shortname UNASPRO). See ubnthal.c's own header for the two data bugs fixed
-# versus the originally recovered system.info/board files.
-#
-# Kept outside $SRC_DIR for the same reason as every other custom driver --
-# `rm -rf "$SRC_DIR"` at the top must never touch it.
+# From-scratch stub for unifi-drive's storageService, exporting a UNAS Pro
+# identity (sysid 0xea51) from /proc/ubnthal/{system.info,board}; outside $SRC_DIR.
 CUSTOM_UBNTHAL_DIR="$SCRIPT_DIR/custom-drivers"
 if [ ! -f "$CUSTOM_UBNTHAL_DIR/ubnthal.c" ]; then
     echo "ERROR: $CUSTOM_UBNTHAL_DIR/ubnthal.c not found." >&2
@@ -376,9 +274,8 @@ config UBNT_HAL
 	  were already written in the portable style with a correct,
 	  complete teardown path -- no C source changes needed for this.
 KCONFIG_EOF
-# drivers/misc/{Kconfig,Makefile} have no pre-existing reference to a
-# "ubnthal" subdirectory, so add both parent-side lines here, right after
-# the real ubnt/ ones, so they land in the same place every fresh extraction.
+# No pre-existing ubnthal reference; add it to drivers/misc/{Kconfig,Makefile}
+# after the ubnt/ entries so it lands in the same place every extraction.
 sed -i '/^source "drivers\/misc\/ubnt\/Kconfig"$/a source "drivers/misc/ubnthal/Kconfig"' \
     drivers/misc/Kconfig
 sed -i '/^obj-y.*ubnt\/$/a obj-y\t\t\t\t+= ubnthal/' \
@@ -398,13 +295,8 @@ fi
 echo "   Installed ubnthal.c from $CUSTOM_UBNTHAL_DIR and wired into drivers/misc/ (survives future reruns)."
 
 # --- ui_hdd_pwrctl_fake: dummy HDD bay presence for uhwd ---
-# Not a Ubiquiti driver -- ui-hdd-pwrctl.ko only exists prebuilt for
-# 5.10.216-alpine-unas (real UNAS Pro/UNAS4 Alpine-SoC kernel), and would
-# talk to backplane I2C/GPIO this Qualcomm APQ8053 board doesn't have. uhwd
-# reads /sys/devices/platform/ui-hdd-pwrctl/slot-<N>/present directly
-# (confirmed via strace) and treats every slot as empty without it; this
-# from-scratch stub creates the same sysfs shape. See its header comment for
-# details.
+# From-scratch sysfs stub at /sys/devices/platform/ui-hdd-pwrctl/slot-<N>/
+# present; the real driver exists only for the 5.10-alpine-unas kernel.
 CUSTOM_UI_HDD_PWRCTL_FAKE_DIR="$SCRIPT_DIR/custom-drivers"
 if [ ! -f "$CUSTOM_UI_HDD_PWRCTL_FAKE_DIR/ui_hdd_pwrctl_fake.c" ]; then
     echo "ERROR: $CUSTOM_UI_HDD_PWRCTL_FAKE_DIR/ui_hdd_pwrctl_fake.c not found." >&2
@@ -463,14 +355,10 @@ rm -f drivers/staging/fbtft/*
 rmdir drivers/staging/fbtft 2>/dev/null || true
 sed -i 's|^source "drivers/staging/fbtft/Kconfig"|# source "drivers/staging/fbtft/Kconfig" (source missing from GPL tarball)|' \
     drivers/staging/Kconfig
-# fbtft's Makefile line uses obj-$(CONFIG_FB_TFT), which we disable below in
-# .config -- no Makefile edit needed for this one.
+# fbtft's Makefile uses obj-$(CONFIG_FB_TFT), disabled below; no Makefile edit needed.
 
 # --- fb_sp8110: reconstructed driver, reinstated after the wipe above ---
-# The wipe above deletes the whole fbtft directory every run because each run
-# starts from a fresh extraction. The reconstructed source lives OUTSIDE
-# $SRC_DIR so `rm -rf "$SRC_DIR"` never touches it; this re-injects it after
-# the wipe so it survives every rerun instead of needing manual re-adding.
+# Source lives outside $SRC_DIR so the clean extraction never deletes it.
 CUSTOM_FBTFT_DIR="$SCRIPT_DIR/custom-drivers"
 REQUIRED_FBTFT_FILES="fb_sp8110.c fbtft.h fbtft-core.c fbtft-bus.c fbtft-io.c fbtft-sysfs.c"
 for f in $REQUIRED_FBTFT_FILES; do
@@ -523,11 +411,8 @@ echo "   Reinstated fb_sp8110.c from $CUSTOM_FBTFT_DIR (survives future reruns).
 
 # --- leds-ulogo / ledtrig-external: reconstructed drivers, reinstated
 #     after the wipe above ---
-# Neither file exists in Ubiquiti's GPL tarball at all -- not even as a
-# broken symlink -- so drivers/leds/{Kconfig,Makefile} and
-# drivers/leds/trigger/Makefile are intact from extraction. We only add the
-# two new files and append to the existing files, kept outside $SRC_DIR for
-# the same reason as the fbtft files above.
+# Not in the tarball at all, so drivers/leds/ files are intact -- just add
+# the sources and append entries; kept outside $SRC_DIR like the fbtft files.
 CUSTOM_LEDS_DIR="$SCRIPT_DIR/custom-drivers"
 REQUIRED_LEDS_FILES="leds-ulogo.c ledtrig-external.c"
 for f in $REQUIRED_LEDS_FILES; do
@@ -573,9 +458,7 @@ echo 'obj-$(CONFIG_LEDS_ULOGO)		+= leds-ulogo.o' >> drivers/leds/Makefile
 echo "   Reinstated leds-ulogo.c + ledtrig-external.c from $CUSTOM_LEDS_DIR (survives future reruns)."
 
 # --- gpio-battery.c: leave symlink, disable via .config below ---
-# (Has an obj-$(CONFIG_X) conditional Makefile entry, so disabling the
-# config option suffices -- no source needed. hci_smd.c used to be handled
-# this way and is now reinstated with real ported source above.)
+# Conditional Makefile entry, so disabling the config option suffices.
 
 echo "== Symlink fixes complete =="
 
@@ -583,9 +466,8 @@ echo "== Symlink fixes complete =="
 
 install_verified_config() {
 # ---- 3. Install the verified running config ----
-# This is YOUR device's actual config (from /proc/config.gz), NOT the
-# generic apq8053-family config shipped in the tarball (which includes
-# RAID/DM/bcache options meant for NVR-class hardware this CloudKey lacks).
+# The device's real /proc/config.gz, not the generic apq8053 config in the
+# tarball (which carries NVR-class RAID/DM/bcache options this device lacks).
 echo "== Installing verified running config =="
 cp "../$RUNNING_CONFIG" .config
 
@@ -598,52 +480,31 @@ echo "== Applying config changes =="
 # a) Mark this as a custom build (also changes vermagic)
 sed -i "s/^CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION=\"$LOCALVERSION_SUFFIX\"/" .config
 
-# b) Disable drivers whose source is genuinely missing from the tarball
-#    (cosmetic/accessory hardware only -- none blocks a bootable, networked
-#    kernel):
-#      FB_TFT_ST7735R          : unused second display driver, never reconstructed
-#      UBNT_CLOUDKEY_RACKMOUNT : rackmount detection, never reconstructed
-#      BATTERY_GPIO            : GPIO battery reporting
-#
-#    NOTE: FB_TFT / FB_TFT_SP8110, UBNT_CLOUDKEY_POWERSOURCE and BT_HCISMD
-#    are intentionally NOT force-disabled here. The reinstatement step above
-#    (section 2) restores their source every run, and the enable steps below
-#    turn each option back on -- disabling them here too would silently drop
-#    the drivers despite the source being present. To ship without one,
-#    remove its enable step rather than re-add a disable line.
+# b) Disable source-less drivers: FB_TFT_ST7735R, UBNT_CLOUDKEY_RACKMOUNT,
+#    BATTERY_GPIO -- not the ones restored above and re-enabled below.
 sed -i \
   -e 's/^CONFIG_FB_TFT_ST7735R=y/# CONFIG_FB_TFT_ST7735R is not set/' \
   -e 's/^CONFIG_UBNT_CLOUDKEY_RACKMOUNT=y/# CONFIG_UBNT_CLOUDKEY_RACKMOUNT is not set/' \
   -e 's/^CONFIG_BATTERY_GPIO=y/# CONFIG_BATTERY_GPIO is not set/' \
   .config
 
-# b2) Enable the reconstructed SP8110 driver. Uses explicit add-or-replace
-#     logic, not a plain sed substitution, because verified-running.config may
-#     carry "# CONFIG_FB_TFT is not set" (which a =y/=n sed would miss).
+# b2) Enable reconstructed SP8110 (add-or-replace: config may say "is not set").
 for sym in CONFIG_FB_TFT CONFIG_FB_TFT_SP8110; do
     sed -i "/^${sym}=/d; /^# ${sym} is not set/d" .config
     echo "${sym}=y" >> .config
 done
-# NOTE: CONFIG_FB_DEFERRED_IO is intentionally NOT set here -- it has no
-# direct Kconfig prompt, so it can only be turned on via "select"; FB_TFT
-# selects it and olddefconfig enables it as a consequence.
-# NOTE: CONFIG_USB_NET_AX88179_178A stays =y -- the device's only network
-# interface (an internal USB-to-ethernet bridge chip), so its source was
-# fixed above rather than disabling it.
+# NOTE: FB_DEFERRED_IO has no prompt and is enabled via FB_TFT's select.
+# NOTE: USB_NET_AX88179_178A stays =y -- the device's only network interface.
 
-# b3) Enable the reconstructed CloudKey power-source driver
-#     (mains/PoE/USB-C detection). Same add-or-replace idiom as b2.
+# b3) Enable reconstructed CloudKey power-source driver; same idiom as b2.
 # shellcheck disable=SC2043  # single symbol now, kept as a loop so the list can grow
 for sym in CONFIG_UBNT_CLOUDKEY_POWERSOURCE; do
     sed -i "/^${sym}=/d; /^# ${sym} is not set/d" .config
     echo "${sym}=y" >> .config
 done
 
-# b4) Enable our clean-room leds-ulogo + ledtrig-external reimplementation.
-#     Symbol names and MAX values are confirmed from verified-running.config
-#     (Ubiquiti's own /proc/config.gz), not invented:
-#     CONFIG_LEDS_ULOGO_PATTERN_MAX=16 and
-#     CONFIG_LEDS_TRIGGER_EXTERNAL_MAX=2 are the real device's values.
+# b4) Enable clean-room leds-ulogo + ledtrig-external. MAX values match the
+#     device's /proc/config.gz: ULOGO_PATTERN_MAX=16, TRIGGER_EXTERNAL_MAX=2.
 for sym in CONFIG_LEDS_TRIGGER_EXTERNAL CONFIG_LEDS_ULOGO; do
     sed -i "/^${sym}=/d; /^# ${sym} is not set/d" .config
     echo "${sym}=y" >> .config
@@ -654,20 +515,15 @@ for sym_val in "CONFIG_LEDS_TRIGGER_EXTERNAL_MAX=2" "CONFIG_LEDS_ULOGO_PATTERN_M
     echo "${sym_val}" >> .config
 done
 
-# b5) Enable the ported hci_smd.c (real Qualcomm/CodeAurora GPLv2 source,
-#     not a clean-room reconstruction -- see its header for provenance).
+# b5) Enable ported hci_smd.c (real Qualcomm/CodeAurora source, not clean-room).
 # shellcheck disable=SC2043  # single symbol now, kept as a loop so the list can grow
 for sym in CONFIG_BT_HCISMD; do
     sed -i "/^${sym}=/d; /^# ${sym} is not set/d" .config
     echo "${sym}=y" >> .config
 done
 
-# b6) Enable btrfs. Genuine unmodified upstream source already in the
-#     tarball (mainline has shipped fs/btrfs/ since 2.6.29) -- a pure
-#     .config change, no symlink/source fix needed. Built =y (not =m) to
-#     skip the modules_install/depmod dance, same as hci_smd. Includes POSIX
-#     ACL support and LZO + zstd compression backends, a reasonable
-#     general-purpose default. Same add-or-replace idiom as b2-b5.
+# b6) Enable btrfs (upstream source already present). Built =y to skip
+#     modules_install/depmod; same add-or-replace idiom as b2-b5.
 for sym in CONFIG_BTRFS_FS CONFIG_BTRFS_FS_POSIX_ACL \
            CONFIG_LZO_COMPRESS CONFIG_LZO_DECOMPRESS \
            CONFIG_ZSTD_COMPRESS CONFIG_ZSTD_DECOMPRESS; do
@@ -675,77 +531,36 @@ for sym in CONFIG_BTRFS_FS CONFIG_BTRFS_FS_POSIX_ACL \
     echo "${sym}=y" >> .config
 done
 
-# b7) Enable FUSE (userspace filesystems). Needed by unifi-drive's M365
-#     backup feature, which mounts a FUSE filesystem via fusermount3;
-#     without this /dev/fuse never exists. Built =y rather than =m (avoids
-#     the modules_install/depmod step), same reason as btrfs/hci_smd above.
+# b7) Enable FUSE for unifi-drive's M365 backup (fusermount3 needs /dev/fuse).
+#     Built =y to skip modules_install/depmod, same as btrfs/hci_smd.
 # shellcheck disable=SC2043  # single symbol now, kept as a loop so the list can grow
 for sym in CONFIG_FUSE_FS; do
     sed -i "/^${sym}=/d; /^# ${sym} is not set/d" .config
     echo "${sym}=y" >> .config
 done
 
-# b8) ubnthal changed from built-in (=y) to loadable module (=m) on
-#     2026-09-05 -- a deliberate demotion (it was =y and stable for months),
-#     done so it can be rmmod'd on demand ahead of a genuine Cloud Key OS
-#     update via the WebUI: with the module unloaded, /proc/ubnthal
-#     disappears (matching real Cloud Key hardware) and unifi-core's
-#     update-check should fall through to genuine ubnt-tools identity.
-#
-#     A matching /lib/modules-load.d/ubnthal.conf entry (added below, like
-#     ui_hdd_pwrctl_fake's) keeps it autoloading on every normal boot --
-#     usd/uhwd need /proc/ubnthal present for their enclosure-compatibility
-#     checks as before; only the ability to unload it on demand is new.
+# b8) ubnthal is =m (loadable) so it can be rmmod'd for a genuine Cloud Key OS
+#     update; modules-load.d autoloads it on boot so usd/uhwd still see it.
 # shellcheck disable=SC2043  # single symbol now, kept as a loop so the list can grow
 for sym in CONFIG_UBNT_HAL; do
     sed -i "/^${sym}=/d; /^# ${sym} is not set/d" .config
     echo "${sym}=m" >> .config
 done
 
-# b9) ui_hdd_pwrctl_fake stays a loadable module (=m), NOT built in, until
-#     proven stable -- see its Kconfig help text above for why. This device
-#     has no serial console, so a bug in a =y driver is undiagnosable and
-#     boot-fatal; a bug in a =m one is just a failed insmod inspectable over
-#     SSH. Load it manually for testing:
-#       ssh root@<cloudkey-ip> "insmod /lib/modules/$(uname -r)/extra/ui_hdd_pwrctl_fake.ko"
-#     (path may vary -- check modules-staging/lib/modules/<version>/ below.)
-#     Only promote to CONFIG_UI_HDD_PWRCTL_FAKE=y, following ubnthal's
-#     pattern above, once loaded and exercised successfully multiple times.
+# b9) ui_hdd_pwrctl_fake stays =m, not =y: no serial console, so a bug in a
+#     built-in driver is boot-fatal. insmod manually; promote only once stable.
 # shellcheck disable=SC2043  # single symbol now, kept as a loop so the list can grow
 for sym in CONFIG_UI_HDD_PWRCTL_FAKE; do
     sed -i "/^${sym}=/d; /^# ${sym} is not set/d" .config
     echo "${sym}=m" >> .config
 done
 
-# c) Patch a genuine alignment bug in smp2p_init_header().
-#    CONFIG_MSM_SMP2P_TEST=y builds drivers/soc/qcom/smp2p_loopback.c, whose
-#    boot path calls into smp2p_init_header(). That function writes to a
-#    struct smp2p_smem __iomem * with plain C field assignment; on __iomem
-#    (shared-memory, device-mapped) regions the compiler may merge adjacent
-#    32-bit stores into one wider store, and under gcc 10.2.1 codegen it
-#    does -- the combined store lands on an address the SoC's memory
-#    controller rejects with an ARM64 alignment fault, a full kernel panic
-#    in kernel_init_freeable before init starts. A real, pre-existing bug in
-#    Ubiquiti's vendor tree, not introduced by this build process.
-#
-#    IMPORTANT: an earlier attempt at fixing this by disabling
-#    CONFIG_MSM_SMP2P_TEST does NOT work -- this vendor tree's core
-#    drivers/soc/qcom/smp2p.c calls smp2p_remote_mock_rx_interrupt() and
-#    msm_smp2p_get_remote_mock_smem_item() unconditionally (no #ifdef at the
-#    call sites), so disabling the option that defines those symbols breaks
-#    the link entirely. The correct fix is a source patch: rewrite
-#    smp2p_init_header() to build each field's value in a plain (non-__iomem)
-#    local using the existing bitfield macros unchanged, then write each
-#    field out individually via writel_relaxed()/readl_relaxed(). This
-#    guarantees exactly one correctly-sized, correctly-offset store per field
-#    and makes it impossible for the compiler to merge or reorder them.
+# c) Patch smp2p_init_header(): gcc 10.2.1 merges adjacent __iomem stores into
+#    an alignment-faulting wide store; disabling MSM_SMP2P_TEST breaks the link.
 echo "== Patching smp2p_init_header() alignment bug =="
 SMP2P_FILE="drivers/soc/qcom/smp2p.c"
 
-# Sanity-check the original function is exactly what we expect before
-# touching anything -- refuse to patch blindly if it doesn't match, same
-# safety principle as before, just without needing python3 installed in
-# a minimal debootstrap chroot.
+# Refuse to patch unless the original function matches exactly (safety).
 if ! grep -Fq 'void smp2p_init_header(struct smp2p_smem __iomem *header_ptr,' "$SMP2P_FILE" 2>/dev/null; then
     echo "ERROR: smp2p_init_header() signature not found as expected in $SMP2P_FILE." >&2
     echo "Refusing to patch blindly -- inspect the file by hand." >&2
@@ -754,7 +569,6 @@ fi
 if grep -q "writel_relaxed(SMP2P_MAGIC" "$SMP2P_FILE"; then
     echo "   Already patched (writel_relaxed present) -- skipping."
 else
-    # Extract line numbers of the function so we can replace it precisely.
     START_LINE="$(grep -Fn 'void smp2p_init_header(struct smp2p_smem __iomem *header_ptr,' "$SMP2P_FILE" | head -1 | cut -d: -f1)"
     if [ -z "$START_LINE" ]; then
         echo "ERROR: could not locate start of smp2p_init_header()." >&2
@@ -814,20 +628,12 @@ FUNCEOF
     echo "   Patched $SMP2P_FILE successfully."
 fi
 
-# Also fix the prototype in the header to match the __iomem qualifier
-# actually used in the .c file (harmless either way, but keeps the two
-# declarations consistent).
+# Match the __iomem qualifier on the prototype in smp2p_private.h.
 sed -i 's/^void smp2p_init_header(struct smp2p_smem \*header_ptr, int local_pid,/void smp2p_init_header(struct smp2p_smem __iomem *header_ptr, int local_pid,/' \
     drivers/soc/qcom/smp2p_private.h
 
-# d) Fix a real GCC-version-drift bug in include/linux/log2.h: the
-#    declaration of ____ilog2_NaN() combines __attribute__((const)) and
-#    __attribute__((noreturn)), which GCC 5+ correctly flags as
-#    contradictory. Mainline fixed this years ago; this vendor tree never
-#    picked it up. Harmless as a warning during this kernel build (we bypass
-#    -Werror via the gcc-wrapper.py removal below), but kept since it's a
-#    real one-line upstream fix that benefits future out-of-tree module
-#    builds with their own stricter -Werror'd ./configure checks.
+# d) log2.h: ____ilog2_NaN() combines const+noreturn attributes, which GCC 5+
+#    flags as contradictory. Non-fatal here; a real upstream one-line fix.
 echo "== Patching log2.h const/noreturn attribute conflict =="
 LOG2_FILE="include/linux/log2.h"
 if grep -q "^extern __attribute__((noreturn))$" "$LOG2_FILE" 2>/dev/null; then
@@ -843,16 +649,8 @@ else
     echo "   -Werror'd ./configure against these headers."
 fi
 
-# h) Backport statx(2). See the header comment above for the "why". Purely
-#    additive: reuses vfs_fstatat()/struct kstat completely unmodified (no
-#    filesystem code touched, no struct kstat fields added), reports only
-#    STATX_BASIC_STATS as valid in stx_mask, and leaves everything this
-#    kernel genuinely can't supply (stx_btime, stx_attributes, stx_mnt_id)
-#    zeroed with its bit never claimed -- exactly what a spec-compliant
-#    statx() caller must check before trusting a field. Syscall number 291
-#    was already a reserved gap in this tree's asm-generic/unistd.h
-#    (__NR_syscalls jumps from __NR_bpf=280 to 292), matching upstream
-#    numbering, so no existing syscall number is disturbed.
+# h) Backport statx(2) (additive: reuses vfs_fstatat()/struct kstat and reports
+#    only STATX_BASIC_STATS). Syscall 291 was a reserved gap in this tree.
 echo "== Backporting statx(2) syscall =="
 
 FCNTL_UAPI="include/uapi/linux/fcntl.h"
@@ -1091,18 +889,8 @@ else
     exit 1
 fi
 
-# e) Silence verbose unhandled-signal logging. This Debian 11 rootfs
-#    runs systemd 247, built expecting a much newer kernel -- it
-#    routinely tries syscalls like pidfd_getfd (434) and close_range
-#    (436) that don't exist on 3.18. The kernel correctly refuses them,
-#    but arm64's default show_unhandled_signals=1 means EVERY such
-#    attempt (dozens per boot, from systemd and various spawned helpers)
-#    prints a full register dump + "Code:" disassembly to the console/
-#    log. None of this indicates an actual problem -- it's just very
-#    noisy. Flipping the compiled-in default to 0 keeps the log
-#    readable. (This can also be toggled at runtime without a rebuild:
-#    `echo 0 > /proc/sys/debug/exception-trace` -- but doesn't survive
-#    reboot, hence patching the default here instead.)
+# e) Set default show_unhandled_signals=0: systemd 247 calls syscalls absent
+#    from 3.18 (pidfd_getfd, close_range), each printing a register dump.
 echo "== Patching default show_unhandled_signals to reduce log noise =="
 TRAPS_FILE="arch/arm64/kernel/traps.c"
 if grep -q "^int show_unhandled_signals = 0;" "$TRAPS_FILE" 2>/dev/null; then
@@ -1117,37 +905,15 @@ else
     echo "   the sysctl command noted above)."
 fi
 
-# f) Force -fcommon compatibility. GCC 10 defaults to -fno-common, which
-#    breaks old C code (like this kernel's vendored dtc lexer/parser)
-#    that relies on tentative-definition merging across translation
-#    units. This is applied at build time below, not via .config.
+# f) GCC 10 defaults to -fno-common, breaking old code that relies on
+#    tentative-definition merging; forced at build time below, not via .config.
 
-# g) Bypass the Android/AOSP gcc-wrapper.py "forbidden warning" gate.
-#    This tree inherits an allowlist-based warning gate meant for
-#    Google's internal regression testing against ONE specific historical
-#    GCC version. Against gcc 10, it fails the build on totally benign,
-#    well-known GCC-version-drift warnings (e.g. log2.h's noreturn/const
-#    attribute conflict) that have nothing to do with kernel correctness.
+# g) Bypass the AOSP gcc-wrapper.py warning gate, which fails the build on
+#    benign GCC-version-drift warnings under gcc 10.
 sed -i '/gcc-wrapper\.py/ s|.*|CC               = $(REAL_CC)|' Makefile
 
-# i) Build the netfilter/iptables NAT path in (=y) instead of as loadable
-#    modules (=m). This tree's arm64 port predates upstream module-PLT
-#    support (no CONFIG_ARM64_MODULE_PLTS in arch/arm64/Kconfig), so any
-#    module whose relocations land outside the +-128MB CALL26/JUMP26 branch
-#    range fails to load with "overflow in relocation type 261" -- confirmed
-#    live on the device that x_tables.ko hits exactly this, unrecoverable
-#    short of a full PLT-stub backport. Building these in links them
-#    directly into vmlinux and sidesteps the missing-PLT gap entirely, the
-#    same trade made for CONFIG_BTRFS_FS/CONFIG_FUSE_FS above (b6/b7).
-#    Needed for the owner-match REDIRECT rule:
-#      iptables -t nat -A OUTPUT -m owner --uid-owner unifi-drive \
-#          --dport 11081 -j REDIRECT --to-port 11090
-#
-#    NOTE: a =y symbol cannot depend on a =m one, so list CONFIG_NF_CONNTRACK
-#    and CONFIG_NF_CONNTRACK_IPV4 below too (IP_NF_NAT/NF_NAT_IPV4 depend on
-#    them); otherwise olddefconfig silently demotes them back to =m. The
-#    sanity check below catches that. NF_CONNTRACK_IPV4 auto-selects
-#    NF_DEFRAG_IPV4, so no separate force is needed for it.
+# i) Build netfilter/iptables NAT in (=y): this arm64 port lacks module PLTs,
+#    so x_tables.ko fails to load; NF_CONNTRACK/NF_CONNTRACK_IPV4 must be =y too.
 for sym in CONFIG_NETFILTER_XTABLES CONFIG_IP_NF_IPTABLES \
            CONFIG_NF_CONNTRACK CONFIG_NF_CONNTRACK_IPV4 \
            CONFIG_NF_NAT CONFIG_NF_NAT_IPV4 CONFIG_IP_NF_NAT \
@@ -1168,10 +934,7 @@ echo ""
 }
 
 sanity_check_config() {
-# ---- 5. Sanity-check the config before committing to a full build ----
-# (Non-interactive: prints diagnostics and aborts automatically if something
-# looks wrong, rather than pausing for a human. Cheap insurance before a
-# 20+ minute build.)
+# ---- 5. Sanity-check key config symbols before the full build (aborts on error). ----
 echo "== Sanity-checking key config symbols =="
 FAIL=0
 for sym in USB_NET_AX88179_178A MSM_SMEM MSM_SMP2P CRYPTO_DEV_QCE50 LEDS_ULOGO LEDS_TRIGGER_EXTERNAL UBNT_CLOUDKEY_POWERSOURCE BT_HCISMD BTRFS_FS FUSE_FS UBNT_HAL UI_HDD_PWRCTL_FAKE; do
@@ -1203,14 +966,8 @@ echo "   All expected symbols present."
 }
 
 build_kernel() {
-# ---- 6. Build ----
-# KCFLAGS adds -fno-asynchronous-unwind-tables/-fno-unwind-tables on top of
-# this tree's KBUILD_CFLAGS. This vendor 3.18 Makefile predates the line
-# mainline arm64 has and never disables unwind tables. Host gcc 10.x emits
-# .eh_frame CFI data by default -- SHF_ALLOC with 32-bit PC-relative
-# (R_AARCH64_PREL32) pointers. Fine for vmlinux, but modules load far enough
-# away in vmalloc space that those pointers overflow at insmod time
-# ("overflow in relocation type 261"), making modules unloadable.
+# ---- 6. Build (KCFLAGS drops unwind tables: gcc 10 .eh_frame PC-relative
+#      pointers overflow for modules in vmalloc space at insmod) ----
 echo "== Building kernel + modules (this will take a while) =="
 make -j"$JOBS" HOSTCFLAGS="-fcommon" \
     KCFLAGS="-fcommon -fno-asynchronous-unwind-tables -fno-unwind-tables" \
@@ -1223,9 +980,8 @@ if [ ! -f arch/arm64/boot/Image ]; then
 fi
 
 echo "== Verifying the smp2p_init_header fix actually landed in the binary =="
-# writel_relaxed is inlined/a macro on arm64, so there is no symbol to grep
-# for; a clean link with MSM_SMP2P_TEST=y is itself strong evidence the patch
-# applied (the unpatched version fails to link or panics at boot).
+# writel_relaxed is inlined on arm64 (no symbol); a clean link with
+# MSM_SMP2P_TEST=y is itself the evidence.
 if nm vmlinux 2>/dev/null | grep -q smp2p_remote_mock_init; then
     echo "   smp2p_remote_mock_init present (expected -- MSM_SMP2P_TEST=y, patched version)."
 else
@@ -1244,17 +1000,14 @@ echo "== Installing modules (this device has 250 CONFIG_X=m modules that" \
 MODULES_STAGING_DIR="../modules-staging"
 rm -rf "$MODULES_STAGING_DIR"
 mkdir -p "$MODULES_STAGING_DIR"
-# Resolve to an absolute path now: this script does `cd ..` later (in the
-# boot-image step) before the NEXT STEPS instructions referencing this
-# variable print, so a relative path would silently point somewhere wrong.
+# Resolve now: the script `cd ..` later, so a relative path would break the
+# NEXT STEPS output that references this variable.
 MODULES_STAGING_DIR="$(cd "$MODULES_STAGING_DIR" && pwd)"
 make INSTALL_MOD_PATH="$MODULES_STAGING_DIR" modules_install
 KERNEL_VERSION="$(make -s kernelrelease)"
 
-# `modules_install` creates 'build'/'source' symlinks back into the kernel
-# source tree (for DKMS builds). The device only needs the .ko files; left in
-# place, `scp -r` dereferences the symlinks and copies the entire source tree
-# instead of a handful of bytes.
+# Drop modules_install's build/source symlinks, or `scp -r` would dereference
+# them and copy the whole kernel source tree.
 rm -f "$MODULES_STAGING_DIR/lib/modules/$KERNEL_VERSION/build"
 rm -f "$MODULES_STAGING_DIR/lib/modules/$KERNEL_VERSION/source"
 
@@ -1277,10 +1030,8 @@ cat ../Image.gz "../$LIVE_DTB" > ../my-Image.gz-dtb
 
 cd ..
 
-# abootimg needs an existing bootimg.cfg and initrd.img (extracted once from
-# your device's ORIGINAL boot.img backup with `abootimg -x ...`). They carry
-# the real load addresses, page size and cmdline, reused unchanged; only the
-# kernel+dtb payload is new.
+# bootimg.cfg/initrd.img (from `abootimg -x` on the original backup) carry the
+# real load addresses and cmdline; only the kernel+dtb payload is new.
 if [ ! -f bootimg.cfg ] || [ ! -f initrd.img ]; then
     echo "ERROR: bootimg.cfg and/or initrd.img not found." >&2
     echo "Extract them once from your original boot partition backup with:" >&2
@@ -1328,11 +1079,8 @@ main() {
     package_boot_image
 }
 
-# Guarded so this script can be `source`d to test/re-run an individual
-# stage in isolation (e.g. re-running just package_boot_image after a
-# manual .config tweak) without repeating the whole build -- no effect on
-# normal `./01-build-kernel.sh` execution, same pattern as this project's
-# other pipeline scripts.
+# Guarded so the script can be sourced to re-run a single stage without a
+# full build; no effect on normal execution.
 if ! (return 0 2>/dev/null); then
     main "$@"
 fi

@@ -2,21 +2,11 @@
 # install-unifi-drive-stack.sh
 #
 # Fresh-install path: assumes the custom 3.18.44-btrfscustom kernel and
-# ui_hdd_pwrctl_fake.ko are ALREADY flashed/present (aborts otherwise).
-# Installs the NAS/Drive package set and calls
-# apply-cloudkey-drive-fixes.sh (must live in the same directory).
-#
-# The real 4.x-era Drive app is never published in apt.artifacts.ui.com's
-# generic repo (only a much older 1.x lineage), so this installs the
-# genuine app from the fw_picked/debs-build/ .debs (extracted from this
-# device's own real firmware) and installs every dependency in ONE apt/dpkg
-# pass -- a corrective `apt-get install -f` afterward caused apt's resolver
-# to REMOVE unifi-drive/unifi-drive-config entirely on a real run.
-#
-# unifi-drive-rclone (>= 1.74.4) is a genuine dependency not present in this
-# project folder or the generic apt repo. This script deliberately
-# hard-fails with a clear message rather than silently skipping it or
-# guessing a URL.
+# ui_hdd_pwrctl_fake.ko are already present (aborts otherwise). Installs the
+# real 4.x NAS/Drive app + deps in ONE apt/dpkg pass (a corrective
+# `apt-get install -f` had apt's resolver REMOVE unifi-drive entirely) from
+# fw_picked/debs-build/, then runs 04-apply-drive-fixes.sh (same directory).
+# Runs on the device as root. Missing unifi-drive-rclone (>= 1.74.4) hard-fails.
 
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -28,19 +18,8 @@ EXPECT_KERNEL="3.18.44-btrfscustom"
 
 log() { echo "[install-unifi-drive-stack] $*"; }
 
-# Some bullseye-security point-release builds this device's sources.list
-# references have been pruned from security.debian.org entirely (genuine
-# 404, not a fluke) -- hit for the samba family, the avahi family, and
-# ubnt-libvips42's imaging-library deps. The regular (non-security) archive
-# still has an older build of the same source packages. This wraps any
-# `apt-get "$@"`: on ANY apt-get failure, retries from the regular archive
-# with --allow-downgrades, then `apt-mark hold`s whatever apt actually
-# touched (via a dry-run `-s` pass, not a hardcoded package list) so a later
-# `apt-get update` with security re-enabled doesn't re-fetch the
-# still-missing version. The fallback's own dry-run result is the signal: if
-# the regular-archive retry doesn't resolve things either, the ORIGINAL
-# failure is restored and propagated untouched -- this can't mask an
-# unrelated apt error, only one this fallback demonstrably fixes.
+# Security-mirror gap: some bullseye-security point releases were pruned (real 404s; hit by samba/avahi/ubnt-libvips42-deps). On ANY apt-get failure, retry from the regular archive with --allow-downgrades and `apt-mark hold` what apt touched, so security updates don't re-fetch the missing version.
+# The fallback's own dry-run decides, so it can't mask an unrelated apt error.
 apt_run_with_mirror_gap_retry() {
     local out orig_status
     if out=$(apt-get "$@" 2>&1); then
@@ -50,18 +29,8 @@ apt_run_with_mirror_gap_retry() {
     orig_status=$?
     printf '%s\n' "$out" >&2
 
-    # Don't gate this on a specific error-message signature: a security
-    # mirror gap surfaces as a plain fetch 404 when a package is first
-    # requested, but as an "unmet dependencies / held broken packages"
-    # resolver error when a package needing an EXACT version match runs into
-    # a sibling already held at the regular-archive version (hit for real
-    # installing avahi-daemon after libavahi-client3/common3 were held by an
-    # earlier samba-correction pass). A narrow grep misses the second shape.
-    #
-    # Instead: always attempt the regular-archive-only fallback on ANY
-    # apt-get failure and let its own dry-run result be the signal. This
-    # still only masks a failure this fallback demonstrably fixes, so it
-    # can't silently paper over an unrelated apt error.
+    # Don't gate on an error signature: the gap surfaces as a fetch 404 OR as an "unmet dependencies / held broken packages" resolver error, so a narrow grep misses the second shape.
+    # Always attempt the fallback on any failure and let its own dry-run be the signal.
     log "apt-get $* failed -- trying regular-archive-only fallback (security mirror gap)"
     cp /etc/apt/sources.list /etc/apt/sources.list.mirrorgap.bak
     sed -i '/security\.debian\.org/s/^/#/' /etc/apt/sources.list
@@ -104,13 +73,7 @@ check_prereqs() {
         exit 1
     fi
 
-    # The module tree under /lib/modules/$EXPECT_KERNEL/ can go missing even
-    # though the custom kernel is still flashed and running (a genuine
-    # firmware flash can reconcile /lib/modules back to the stock trees
-    # only). This project's build output is saved at
-    # fw_picked/kernel-modules-3.18.44-btrfscustom/ so this script can
-    # self-heal: if the module is missing but a matching source tree is
-    # available locally, restore it and re-run depmod before continuing.
+    # /lib/modules/$EXPECT_KERNEL/ can go missing while the custom kernel still runs (a flash can reconcile it to stock trees only); self-heal from the local fw_picked module tree and re-run depmod.
     if ! find "/lib/modules/$EXPECT_KERNEL" -name 'ui_hdd_pwrctl_fake.ko' 2>/dev/null | grep -q .; then
         if [[ -d "$MODULES_DIR" ]]; then
             log "ui_hdd_pwrctl_fake.ko missing under /lib/modules/$EXPECT_KERNEL/ -- restoring from $MODULES_DIR"
@@ -136,17 +99,12 @@ check_prereqs() {
 
 setup_apt_sources() {
     log "apt sources (ubiquiti + nginx.org)"
-    # Rewritten every run: observed missing across sessions for no clear
-    # reason, so treat its absence as expected, not a bug.
+    # Rewritten every run: its absence was observed across sessions for no clear reason, so treat it as expected, not a bug.
     cat > /etc/apt/sources.list.d/ubiquiti.list <<'EOF'
 deb [signed-by=/usr/share/keyrings/ubnt-archive-keyring.gpg] https://apt.artifacts.ui.com bullseye release
 EOF
-    # The ubnt-archive-keyring .deb ships its key as
-    # /usr/share/keyrings/ubiquiti-archive-keyring.gpg, not the
-    # ubnt-archive-keyring.gpg named in the source line above -- a naming
-    # mismatch, not a missing-package problem. Symlink it every run so a
-    # fresh dpkg -i of that package (which won't recreate a symlink someone
-    # else made) stays resolvable.
+    # The ubnt-archive-keyring .deb ships its key as ubiquiti-archive-keyring.gpg,
+    # not the ubnt-archive-keyring.gpg named above -- symlink it every run.
     if [[ -f /usr/share/keyrings/ubiquiti-archive-keyring.gpg && ! -e /usr/share/keyrings/ubnt-archive-keyring.gpg ]]; then
         ln -sf /usr/share/keyrings/ubiquiti-archive-keyring.gpg /usr/share/keyrings/ubnt-archive-keyring.gpg
     fi
@@ -156,12 +114,8 @@ install_plain_debian_deps() {
     log "plain-Debian dependencies"
     apt-get update
 
-    # On trixie the pinned bookworm-backport samba set CANNOT configure: its
-    # python3-tdb/python3-ldb/libldb2 depend on `python3 (<< 3.10)` and
-    # `libpython3.9`, gone with trixie's Python 3.13. Install trixie's own
-    # samba directly instead. On bullseye keep the genuine bookworm-backport
-    # build pinned from this device's firmware (avoids plain bullseye's
-    # avahi-version conflict).
+    # On trixie the pinned bookworm-backport samba CANNOT configure (its tdb/ldb deps
+    # need python3.9, gone with Python 3.13), so use trixie's own; on bullseye keep the firmware pin.
     local codename
     codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"
     if [[ "$codename" == "trixie" ]]; then
@@ -192,17 +146,12 @@ install_plain_debian_deps() {
         apt_run_with_mirror_gap_retry install -f -y
     fi
 
-    # avahi has no matching .deb in this project's firmware captures (it's
-    # baked into the base rootfs, not apt-installed at runtime), so this one
-    # really does need the mirror-gap retry.
+    # avahi has no matching .deb in the firmware captures (baked into the base rootfs, not apt-installed), so it genuinely needs the mirror-gap retry.
     apt_run_with_mirror_gap_retry install -y \
         avahi-daemon \
         attr ecryptfs-utils nfs-kernel-server fuse3 rsync libimage-exiftool-perl \
         btrfs-progs lvm2
-    # wsdd-server is never in the generic apt repo (Debian nor
-    # apt.artifacts.ui.com) -- its only real source is the .deb in
-    # fw_picked/debs-build/. Install the local .debs first: on trixie apt
-    # just prints "E: Unable to locate package wsdd-server".
+    # wsdd-server is in no apt repo (Debian nor apt.artifacts.ui.com); its only real source is fw_picked/debs-build/, so install the local .deb first.
     if compgen -G "$DEBS_DIR/wsdd-server_*.deb" >/dev/null; then
         log "wsdd-server from fw_picked/debs-build/ (not in any apt repo)"
         dpkg -i "$DEBS_DIR"/wsdd-server_*.deb "$DEBS_DIR"/wsdd_*.deb || true
@@ -213,15 +162,8 @@ install_plain_debian_deps() {
 }
 
 install_via_uos_runnable() {
-    # On a trixie base the pinned bullseye .debs for these packages no longer
-    # install: ubnt-libvips42's bullseye-era sonames (libgif7, libwebp6,
-    # etc.) don't exist in trixie -- a genuinely different build, not a
-    # mirror gap. `uos runnable install` pulls Ubiquiti's trixie-native
-    # (uos-deb13-arm64) build instead. Order matters: ubnt-libvips42 before
-    # unifi-drive, or installing unifi-drive first 400s with a uos-side
-    # SemVer comparison bug. ubnt-libvips42's trixie binary is renamed
-    # ubnt-libvips42t64, but the catalog entry is still queried under the old
-    # name ubnt-libvips42 -- do not "fix" this to the t64 name.
+    # On trixie the pinned bullseye .debs won't install (ubnt-libvips42's sonames like libgif7/libwebp6 are gone), so `uos runnable install` pulls Ubiquiti's trixie-native uos-deb13-arm64 build instead.
+    # Order matters: ubnt-libvips42 before unifi-drive (reverse 400s on a uos SemVer bug); query ubnt-libvips42 by that name even though its trixie binary is ubnt-libvips42t64.
     local pkg="$1"
     if dpkg -l "$pkg" 2>/dev/null | grep -qE '^.i '; then
         log "  $pkg already installed, leaving in place (not overwriting a possibly newer version)"
@@ -234,11 +176,8 @@ install_via_uos_runnable() {
 install_ubiquiti_specific_debs() {
     log "Ubiquiti-specific packages from fw_picked/debs-build/"
 
-    # Detect trixie vs bullseye base and route unifi-drive/
-    # unifi-drive-config/ubnt-libvips42 to `uos runnable install` on trixie
-    # -- the fw_picked/debs-build/ pins for these three are bullseye-only.
-    # Everything else here (samba, wsdd, rclone, etc.) stays on the
-    # pinned-.deb path regardless of base.
+    # On trixie route unifi-drive/unifi-drive-config/ubnt-libvips42 to `uos runnable
+    # install` (their fw_picked .debs are bullseye-only); everything else stays pinned.
     local codename is_trixie=0
     codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"
     if [[ "$codename" == "trixie" ]]; then
@@ -247,16 +186,10 @@ install_ubiquiti_specific_debs() {
         install_via_uos_runnable ubnt-libvips42
         install_via_uos_runnable unifi-drive
         install_via_uos_runnable unifi-drive-config
-        # ubnt-libvips-tools and unifi-drive-rclone aren't known to hit the
-        # trixie soname break -- still installed from the pinned .debs below.
+        # ubnt-libvips-tools/unifi-drive-rclone don't hit the trixie soname break; keep the pinned .debs below.
     fi
-    # unifi-drive needs the exact package "unifi-drive-rclone", NOT
-    # "unifi-rclone" (a different package, a dependency of unifi-talk). Match
-    # only the exact name: an earlier version matched either via
-    # `find A -o -iname B | head -n1`, whose dependence on find's
-    # filesystem-order (not alphabetical) non-deterministically picked the
-    # wrong one and made apt's resolver silently REMOVE
-    # unifi-drive/unifi-drive-config.
+    # Must match the exact name "unifi-drive-rclone", NOT "unifi-rclone" (a different
+    # package, a unifi-talk dep): a looser `find A -o -iname B` picked the wrong .deb by filesystem order and made apt REMOVE unifi-drive.
     local rclone_deb
     rclone_deb=$(find "$DEBS_DIR" -maxdepth 1 -iname 'unifi-drive-rclone*.deb' | head -n1 || true)
     if [[ -z "$rclone_deb" ]]; then
@@ -268,16 +201,9 @@ EOF
         exit 1
     fi
 
-    # Only install a package if it isn't already installed at all --
-    # unconditionally dpkg -i'ing the pinned version on every re-run
-    # silently DOWNGRADED a live unifi-drive-config from a natively-updated
-    # 2.23.0-11 back to the older 2.22.6-10 pin (caught live). A genuinely
-    # fresh device is unaffected; only a re-run against an already-updated
-    # device behaves differently.
-    #
-    # ubntnas is deliberately NOT installed: nothing on the device depends on
-    # it (no systemd unit, no cron, no reverse dpkg deps), and the WebUI
-    # firmware-update flow it backs fails on its own anyway.
+    # Only install if not already installed: unconditionally dpkg -i'ing the pin on every
+    # re-run silently DOWNGRADED a live, natively-updated unifi-drive-config (2.23.0-11 -> 2.22.6-10); a fresh device is unaffected.
+    # ubntnas is deliberately NOT installed: nothing depends on it and the WebUI firmware-update flow it backs fails on its own.
     local to_install=()
     for pair in \
         "ubnt-libvips42:$DEBS_DIR/ubnt-libvips42_*.deb" \
@@ -287,8 +213,7 @@ EOF
         "unifi-drive-config:$DEBS_DIR/unifi-drive-config_*.deb"
     do
         local pkg_name="${pair%%:*}" deb_pattern="${pair#*:}"
-        # Already handled via uos runnable install above on trixie -- the
-        # pinned .deb for these three is bullseye-only.
+        # Already handled via uos runnable install on trixie (the pinned .debs are bullseye-only).
         if (( is_trixie )) && [[ "$pkg_name" == "ubnt-libvips42" || "$pkg_name" == "unifi-drive" || "$pkg_name" == "unifi-drive-config" ]]; then
             continue
         fi
@@ -301,27 +226,18 @@ EOF
         fi
     done
 
-    # Installed together in one pass with unifi-drive/unifi-drive-config --
-    # do NOT split this into dpkg -i then a separate apt-get install -f.
+    # One pass with unifi-drive/unifi-drive-config -- do NOT split into dpkg -i then a separate apt-get install -f.
     if (( ${#to_install[@]} > 0 )); then
         dpkg -i "${to_install[@]}" || true   # dpkg -i on a batch may report dependency errors; apt-get -f below resolves them from the same local set
     else
         log "  all Ubiquiti-specific packages already installed, nothing to do"
     fi
 
-    # ubnt-libvips42's imaging-library deps (libaom0, libmagickcore-6.q16-6,
-    # libgdk-pixbuf2.0-common, libgs9-common, libgsf-1-common) hit the same
-    # security.debian.org mirror gap as samba/avahi above -- no genuine .deb
-    # in any firmware capture, so the retry-from-regular-archive wrapper is
-    # the only fix.
+    # ubnt-libvips42's imaging-library deps hit the same security.debian.org mirror gap as samba/avahi above (no genuine .deb in any firmware capture), so the retry wrapper is the only fix.
     apt_run_with_mirror_gap_retry install -f -y
 
-    # Match dpkg -l's STATUS column ('i' = installed) regardless of its
-    # DESIRED column ('i' = install, 'h' = hold): a package swept into
-    # apt_run_with_mirror_gap_retry's hold-set (e.g. unifi-drive, when it's
-    # part of the same transaction as the gap-affected imaging-library
-    # packages) shows as 'hi', not 'ii', even though it's correctly
-    # installed. A literal '^ii' check false-positives an error there.
+    # Match dpkg -l's STATUS column ('i'), not DESIRED: packages swept into the mirror-gap
+    # hold-set (e.g. unifi-drive) show as 'hi', not 'ii', though correctly installed -- a literal '^ii' check false-positives.
     for pkg in unifi-drive unifi-drive-config; do
         if ! dpkg -l "$pkg" 2>/dev/null | grep -qE '^.i '; then
             echo "ERROR: $pkg did not configure successfully ('ii'/'hi' not found in dpkg -l) -- check apt-get install -f output above" >&2
@@ -340,10 +256,8 @@ main() {
     log "done"
 }
 
-# Guarded so this script can be `source`d to test/re-run an individual
-# function in isolation (e.g. after a partial failure) without re-running
-# the whole install from scratch -- no effect on normal `./install-...sh`
-# execution.
+# Guarded so the script can be `source`d to re-run one function in isolation
+# (e.g. after a partial failure) without repeating the whole install.
 if ! (return 0 2>/dev/null); then
     main "$@"
 fi

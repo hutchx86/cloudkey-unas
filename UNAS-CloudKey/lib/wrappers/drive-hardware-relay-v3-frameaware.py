@@ -1,33 +1,9 @@
 #!/usr/bin/env python3
-# Frame-aware caller-differentiated identity relay for unifi-drive's
-# connection to unifi-core, port 11081.
-#
-# Replaces an earlier naive byte-substitution approach that corrupted the
-# WebSocket stream (RSV1/RSV2 set, bad opcode errors, escalating to
-# connection timeout) because it never recomputed the length fields it
-# changed. This version parses the wire protocol instead of guessing at it:
-#
-#   - Standard RFC 6455 WebSocket framing. unifi-core (server) sends unmasked
-#     binary frames (opcode 2) to unifi-drive; unifi-drive sends masked frames
-#     back (untouched -- only upstream -> client carries the model fields).
-#   - Each WS message payload is a sequence of length-prefixed sub-messages:
-#     1 byte type + 1 byte version + 6-byte big-endian length + that many
-#     bytes of body (JSON). Multiple sub-messages pack into one WS frame back
-#     to back.
-#   - The hardware/model JSON (containing "sysid"/"name"/"shortname") lives
-#     inside a type=2 sub-message, one field deep in a ~17KB system-info blob.
-#
-# Fix: reassemble each complete WS message (handling continuation frames
-# defensively, though none were observed), split it into sub-messages via the
-# 8-byte header, rewrite only bodies containing the target fields, and
-# reconstruct BOTH length fields correctly -- the sub-message's own 6-byte
-# length and the outer WS frame payload length (7/16/64-bit encoding). A Go
-# websocket client validates both, so the receiver must see consistent lengths
-# at both layers.
-#
-# Everything else (the HTTP Upgrade handshake, the client->server direction,
-# WS control frames -- ping/pong/close -- and any non-binary-opcode frame) is
-# forwarded completely unmodified.
+# Frame-aware identity relay for unifi-drive -> unifi-core (listen 11090, upstream 11081).
+# Naive byte substitution corrupted the WS stream by changing length fields without
+# recomputing them; this parses RFC 6455 framing and the sub-message stream (1B type +
+# 1B ver + 6B BE len + body), rewrites only the hardware/model JSON, fixes both length
+# fields, and passes everything else (handshake, client->server, control/non-binary) through.
 
 import asyncio
 import sys

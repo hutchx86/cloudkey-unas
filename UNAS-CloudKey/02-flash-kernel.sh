@@ -1,42 +1,13 @@
 #!/bin/bash
-# 02-flash-kernel.sh
-#
-# Mechanics for the pre-flash safety checklist: back up the CURRENT boot
-# partition with a checksum, transfer the new image and verify its hash
-# BEFORE flashing, flash with an explicit sync, read back and verify, then
-# install the matching kernel module tree.
-#
-# Run from THIS PROJECT'S OWN environment (not on the device, not inside the
-# build chroot) -- needs ssh/scp reach to the device and local access to the
-# build outputs.
-#
-# Deliberately NOT automated:
-#   - Whether the driver source/build is actually safe to flash at all.
-#     This script assumes you've already reviewed it; it will not ask.
-#   - Confirming recovery-mode/serial-console readiness BEFORE the actual
-#     flash -- this script pauses and requires an explicit "yes" here rather
-#     than silently proceeding, because this is the one operation that has
-#     already bricked this device for real.
-#   - Loading any newly-built driver automatically. This script installs the
-#     module FILES onto the device but never insmod's/modprobe's them and
-#     never wires one into /lib/modules-load.d/ -- that stays a separate,
-#     manual insmod-then-exercise-then-decide step.
-#
-# Usage:
-#   DEVICE_HOST=root@10.10.10.61 DEVICE_PASSWORD='...' \
-#       ./02-flash-kernel.sh <path-to-new-boot.img> <modules-staging-dir>
-#
-# <modules-staging-dir> is either 01-build-kernel.sh's MODULES_STAGING_DIR
-# output (contains lib/modules/<kernel-version>/...) OR the saved trimmed
-# tree fw_picked/kernel-modules-<kernel-version>/ (the <version> dir's
-# contents directly). Optional env vars:
-# SSH_CONTROL_SOCKET (default /tmp/ck_ssh_ctrl.sock), BOOT_PARTITION
-# (default /dev/mmcblk0p42 -- "boot", NEVER /dev/mmcblk0p43 "recovery", the
-# partition the recovery shell itself runs from), BACKUP_DIR (default:
-# current directory) for where the pre-flash backup image is saved,
-# KERNEL_VERSION (override the version auto-detected from the module tree),
-# FLASH_CONFIRM=yes (skip the interactive "type yes" confirmation -- for
-# scripted runs only; reads the prompt from /dev/tty otherwise).
+# 02-flash-kernel.sh -- back up the current boot partition (checksummed), transfer and
+# hash-verify the new image BEFORE flashing, flash with sync, read back and verify, then
+# install the module tree. Run from this project's environment (ssh/scp + local outputs).
+# Usage: DEVICE_HOST=root@<ip> DEVICE_PASSWORD='...' \
+#   ./02-flash-kernel.sh <new-boot.img> <modules-staging-dir>
+# Env: SSH_CONTROL_SOCKET, BACKUP_DIR, KERNEL_VERSION, FLASH_CONFIRM=yes, BOOT_PARTITION
+# (default /dev/mmcblk0p42 "boot"; NEVER /dev/mmcblk0p43 "recovery").
+# Deliberately NOT automated: driver-safety review, the recovery-ready "yes" prompt below,
+# and loading the new module (files are installed but never insmod'd/modprobe'd).
 
 set -euo pipefail
 
@@ -45,7 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NEW_BOOT_IMG="${1:?usage: $0 <path-to-new-boot.img> <modules-staging-dir>}"
 MODULES_STAGING_DIR="${2:?usage: $0 <path-to-new-boot.img> <modules-staging-dir>}"
 
-DEVICE_HOST="${DEVICE_HOST:?set DEVICE_HOST, e.g. root@10.10.10.61}"
+DEVICE_HOST="${DEVICE_HOST:?set DEVICE_HOST, e.g. root@<cloudkey-ip>}"
 DEVICE_PASSWORD="${DEVICE_PASSWORD:?set DEVICE_PASSWORD (used only to establish the SSH ControlMaster)}"
 SSH_CONTROL_SOCKET="${SSH_CONTROL_SOCKET:-/tmp/ck_ssh_ctrl.sock}"
 BOOT_PARTITION="${BOOT_PARTITION:-/dev/mmcblk0p42}"
@@ -58,11 +29,8 @@ ssh_dev() { ssh -S "$SSH_CONTROL_SOCKET" "$DEVICE_HOST" "$@"; }
 
 [[ -f "$NEW_BOOT_IMG" ]] || fail "$NEW_BOOT_IMG not found"
 
-# <modules-staging-dir> may be either 01-build-kernel.sh's MODULES_STAGING_DIR
-# (contains lib/modules/<ver>/) OR the saved trimmed tree
-# fw_picked/kernel-modules-<ver>/ (which IS the <ver> dir's contents:
-# kernel/, modules.dep, ...). Override the auto-detected version with
-# KERNEL_VERSION=<value> if needed.
+# <modules-staging-dir> is 01's MODULES_STAGING_DIR (lib/modules/<ver>/) or a saved
+# kernel-modules-<ver> tree (itself the <ver> dir); override with KERNEL_VERSION.
 KERNEL_VERSION="${KERNEL_VERSION:-}"
 if [[ -d "$MODULES_STAGING_DIR/lib/modules" ]]; then
     MODULES_ROOT="$MODULES_STAGING_DIR/lib/modules"
@@ -112,9 +80,8 @@ transfer_and_verify() {
 }
 
 confirm_recovery_ready() {
-    # Read from the controlling terminal, not stdin: the ssh/scp calls above
-    # consume stdin, so a piped/heredoc "yes" can never reach this prompt.
-    # FLASH_CONFIRM=yes skips the prompt for a scripted run.
+    # Read from /dev/tty, not stdin: the ssh/scp calls above consume stdin, so a piped/heredoc
+    # "yes" can never reach this prompt; FLASH_CONFIRM=yes skips it for scripted runs.
     cat <<EOF
 
 =============================================================================
@@ -171,8 +138,7 @@ ensure_remote_rsync() {
 
 install_kernel_modules() {
     log "installing kernel modules for $KERNEL_VERSION (separate from the boot partition -- these live under /lib/modules/, not in the boot image)"
-    # Remove any stale module tree from a previous build first so depmod's
-    # index doesn't mix old and new (as in 01-build-kernel.sh's build_kernel()).
+    # Remove any stale module tree first so depmod's index doesn't mix old and new.
     ssh_dev "rm -rf '/lib/modules/$KERNEL_VERSION'"
     rsync -e "ssh -S $SSH_CONTROL_SOCKET" -a --chown=root:root \
         "$MODULES_SRC/" \
@@ -205,10 +171,7 @@ Done. NOT done automatically (deliberately -- see this script's own header):
 EOF
 }
 
-# Guarded so this script can be `source`d to test/re-run an individual step
-# in isolation without running the whole flash flow -- no effect on normal
-# `./02-flash-kernel.sh` execution, same pattern as this project's other
-# pipeline scripts.
+# Guarded so this script can be `source`d to re-run one step in isolation; no effect on ./02 execution.
 if ! (return 0 2>/dev/null); then
     main "$@"
 fi

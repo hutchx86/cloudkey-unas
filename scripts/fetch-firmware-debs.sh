@@ -1,24 +1,11 @@
 #!/bin/bash
-# fetch-firmware-debs.sh
+# fetch-firmware-debs.sh -- rebuild fw_picked/debs-build/ from Ubiquiti's UNAS Pro
+# firmware: checksum-verify the pinned image, extract its squashfs rootfs (offset
+# located directly, no binwalk), then repack every package in debs-build.packages
+# via repack-firmware-package.sh (host dpkg-deb; no chroot, no package execution).
 #
-# Rebuilds fw_picked/debs-build/ from Ubiquiti's UNAS Pro firmware: downloads
-# (and checksum-verifies) the pinned image, extracts its squashfs rootfs,
-# then repacks every package named in fw_picked/debs-build.packages into a
-# real .deb using repack-firmware-package.sh (host dpkg-deb; no chroot, no
-# execution of package contents). Exists so the ~320M of pinned .debs don't
-# need to live in git -- they are regenerable from the firmware instead.
-#
-# The package set was pinned from UNASPRO.al324.v5.1.33 (the newest v5.1.x
-# build still served by the firmware API as of 2026-09-13); its packages are
-# version-identical to the original v5.1.31 image this project started from
-# (unifi-drive 4.3.10, unifi-core 5.1.132, node24 24.8.0, ...).
-#
-# Requires: bash, wget, python3, dpkg-deb, and unsquashfs (Debian package
-# `squashfs-tools`). binwalk is NOT used -- the squashfs offset is located
-# directly.
-#
-# Usage:
-#   scripts/fetch-firmware-debs.sh
+# Requires: bash, wget, python3, dpkg-deb, unsquashfs (`squashfs-tools`).
+# Usage:    scripts/fetch-firmware-debs.sh
 #
 # Environment overrides:
 #   FW_URL        download URL (default: the pinned v5.1.33 image)
@@ -26,8 +13,7 @@
 #   SQUASHFS_ROOT extracted rootfs (default fw_extract/UNASPRO-5.1.33/squashfs-root)
 #   UNSQUASHFS    path to unsquashfs if not on PATH
 #
-# After running, the debs are NOT tracked by git. Re-verify any provisioned
-# device with UNAS-CloudKey/05-verify.sh before trusting the new set.
+# The debs are not tracked by git; re-verify with UNAS-CloudKey/05-verify.sh.
 
 set -euo pipefail
 

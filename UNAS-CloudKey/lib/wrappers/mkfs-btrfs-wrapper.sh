@@ -1,16 +1,9 @@
 #!/bin/bash
-# Installed as /sbin/mkfs.btrfs (real binary moved to /sbin/mkfs.btrfs.real).
+# Installed as /sbin/mkfs.btrfs (real binary at /sbin/mkfs.btrfs.real).
 #
-# usd hardcodes `mkfs.btrfs -s 65536 -n 65536 <device>` -- sector/node size
-# tuned for real UNAS/UNAS-Pro hardware's 64K-page kernel. This device's
-# 3.18.44 kernel runs 4K pages, and its btrfs code only accepts
-# sectorsize == PAGE_SIZE. Without this wrapper: RAID -> PV -> VG -> LV all
-# succeed, then the final mount fails ("Incompatible sector size(65536)").
-#
-# Reconstructed from documented behavior (strips -s/--sectorsize/-n/
-# --nodesize/--leafsize, forces -s 4096 -n 4096, passes everything else
-# through), not saved verbatim. Verify against the live /sbin/mkfs.btrfs on
-# the device before reinstalling from scratch.
+# usd hardcodes `-s 65536 -n 65536` for 64K-page UNAS hardware, but this
+# device's 3.18.44 kernel uses 4K pages and requires sectorsize == PAGE_SIZE
+# (else the final mount fails). Strips those options, forces -s 4096 -n 4096.
 
 set -euo pipefail
 

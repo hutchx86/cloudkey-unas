@@ -1,28 +1,11 @@
 #!/bin/bash
-# apply-cloudkey-drive-fixes.sh
-#
-# Idempotent fix layer for a genuine UniFi Cloud Key G2 Plus running the
-# real UniFi Drive stack. Assumes unifi-drive, unifi-drive-config, nginx,
-# smartmontools, and the ui_hdd_pwrctl_fake kernel module are ALREADY
-# installed (see install-unifi-drive-stack.sh). Safe to re-run any time --
-# every step below checks state before changing anything.
-#
-# Step 4b installs a caller-differentiated ubnt-tools wrapper: unifi-core/
-# uos/ulp-go see genuine Cloud Key identity (unlocking the WebUI update flow
-# and native app installs), while unifi-drive gets the NAS-spoofed default.
-# **4b and 4c are a package deal -- installing the wrapper without 4c's
-# relay breaks unifi-drive's networkInterfaces field (proven live).** 4c
-# deploys a frame-aware network relay for unifi-drive's own connection to
-# unifi-core, rewriting just the hardware/model fields back to NAS-spoofed.
-#
-# The old "leave ubnt-tools genuine" split made unifi-drive's per-model
-# lookup see console.model:"UCKP" and crash PoolEditor + silently default
-# new pools to ext4; matching ubnt-tools id to the same UNAS2B/0xea72
-# identity as the kernel/HAL layer fixes both.
-#
-# A firmware-update /etc/hosts block was considered and deliberately
-# rejected: a genuine OTA wiping the custom kernel is an accepted outcome,
-# since this project's own scripts are the recovery path for exactly that.
+# apply-cloudkey-drive-fixes.sh -- idempotent fix layer for a genuine UniFi Cloud Key G2
+# Plus running the real UniFi Drive stack (unifi-drive, nginx, smartmontools,
+# ui_hdd_pwrctl_fake already installed). Runs on the device as root; safe to re-run.
+# 4b's caller-differentiated ubnt-tools wrapper (genuine identity for unifi-core/ulp-go,
+# NAS-spoofed default for unifi-drive) and 4c's relay are a package deal -- the wrapper
+# without the relay breaks unifi-drive's networkInterfaces. A firmware-update /etc/hosts
+# block was rejected: an OTA wiping the custom kernel is accepted, our scripts recover it.
 
 set -euo pipefail
 
@@ -61,21 +44,14 @@ fix_bay_presence() {
 
     install -m 0755 "$SCRIPT_DIR/lib/ui-hdd-pwrctl-sync.sh" /usr/local/sbin/ui-hdd-pwrctl-sync.sh
 
-    # num_slots was previously 2 to match usd's hardcoded UNAS2B bay-count
-    # table, but usd/Drive reports its bay count from a separate hardcoded
-    # table keyed by board identity, unaffected by num_slots. The stock
-    # uscsi-disk-ready.service does read this module's slot count and waits
-    # up to 300s per empty configured slot, so num_slots=2 cost ~5 minutes
-    # on every cold boot on this single-bay hardware. num_slots=1 matches
-    # the real hardware and cut boot from ~6m20s to ~51s, with no effect on
-    # Drive (still reports 2 bays via the identity spoof below).
+    # num_slots=1 matches this single-bay hardware, avoiding uscsi-disk-ready's 300s wait
+    # per empty slot (boot ~6m20s -> ~51s); usd/Drive bay count comes from board identity, not num_slots.
     cat > /etc/modprobe.d/ui-hdd-pwrctl-fake.conf <<'EOF'
 options ui_hdd_pwrctl_fake num_slots=1
 EOF
 
-    # /etc/modules-load.d/ does NOT persist across reboots on this device;
-    # the stock autoload conf files live in /lib/modules-load.d/ instead.
-    # Use that, matching the format of the neighboring ubnthal.conf.
+    # /etc/modules-load.d/ does NOT persist across reboots here; use /lib/modules-load.d/,
+    # matching the neighboring ubnthal.conf.
     cat > /lib/modules-load.d/ui-hdd-pwrctl-fake.conf <<'EOF'
 ui_hdd_pwrctl_fake
 EOF
@@ -85,15 +61,8 @@ EOF
         modprobe ui_hdd_pwrctl_fake || log "WARNING: modprobe ui_hdd_pwrctl_fake failed -- is the .ko present under /lib/modules/$(uname -r)/?"
     fi
 
-    # DefaultDependencies=no is REQUIRED, not cosmetic: with the default
-    # (yes), systemd adds After=sysinit.target + After=basic.target to this
-    # unit, but it is Before=uhwd.service/usd.service -- and those run
-    # Before=local-fs.target, which is Before=sysinit.target/basic.target.
-    # That closes an ordering cycle at boot, so systemd deletes the
-    # usd.service/start job to break it: usd never runs, the md/LVM/btrfs
-    # pool is never assembled, and Drive reports no storage until usd is
-    # started by hand. CONFIRMED live 2026-09-14 (device up 7h with usd
-    # dead and /proc/mdstat empty).
+    # DefaultDependencies=no is REQUIRED, not cosmetic: with the default, systemd's After=sysinit/
+    # basic.target plus Before=uhwd/usd closes a boot cycle, so systemd drops the usd job and pools never assemble.
     cat > /etc/systemd/system/ui-hdd-pwrctl-sync.service <<'EOF'
 [Unit]
 Description=Sync ui_hdd_pwrctl_fake bay presence to real attached USB disks
@@ -119,20 +88,12 @@ EOF
     systemctl enable --now ui-hdd-pwrctl-sync.service
 }
 
-# --- 3b. ubnthal module autoload (changed from =y to =m 2026-09-05) --------
-# ubnthal was built into the kernel image (=y) and needed no autoload config.
-# It is now a loadable module (=m) so it can be rmmod'd on demand ahead of a
-# genuine Cloud Key OS update via the WebUI -- with it unloaded, /proc/ubnthal
-# disappears (matching real Cloud Key hardware) and unifi-core's update-check
-# falls through to genuine ubnt-tools identity. This function only restores
-# the *normal* always-on autoload; actually rmmod'ing it for an update is a
-# separate, deliberate manual step, never something this fix script does on
-# its own.
+# ubnthal is now a loadable module (=m, was =y) so it can be rmmod'd ahead of a genuine
+# Cloud Key update; this only restores the normal always-on autoload, never rmmods itself.
 fix_ubnthal_module_autoload() {
     log "ubnthal module autoload (matches its old =y always-on behavior)"
 
-    # Same non-persistence caveat as ui_hdd_pwrctl_fake -- /etc/modules-load.d/
-    # does not survive a reboot on this device, /lib/modules-load.d/ does.
+    # Same non-persistence caveat: /lib/modules-load.d/ survives reboot, /etc/ does not.
     cat > /lib/modules-load.d/ubnthal.conf <<'EOF'
 ubnthal
 EOF
@@ -143,22 +104,8 @@ EOF
     fi
 }
 
-# --- 4. kernel/HAL identity spoof (leaves /sbin/ubnt-tools genuine) --------
-# IMPORTANT: system.info's serialno/qrid get baked directly into usd's
-# on-disk disk_super at pool creation time -- the values below match what
-# this project's current pool has on-disk. If this function only touched
-# sysid/shortname (as it used to), re-running it after ANYTHING resets
-# serialno/qrid (a genuine-identity revert, a firmware update's own
-# provisioning step) would silently leave the wrong values and risk a
-# FOREIGN mismatch on the existing pool. Pin them explicitly for a complete,
-# deterministic restoration of the exact identity this pool was created
-# under.
-#
-# If a *different* pool is ever created after these values change
-# deliberately, update SYSINFO_SERIALNO/SYSINFO_QRID here to match. These
-# are NOT this device's genuine hardware values (board.serialno/board.qrid in
-# the board file ARE genuine and untouched); system.info's are a legacy
-# fabricated value carried forward since early in this project.
+# system.info's serialno/qrid are baked into usd's on-disk disk_super at pool creation, so
+# pin them explicitly (a reset/foreign mismatch risks the existing pool); update if the pool changes.
 fix_kernel_hal_identity() {
     log "kernel/HAL identity spoof (UNAS2B, sysid 0xea72)"
     local board=/opt/ubnthal/board
@@ -206,12 +153,8 @@ fix_kernel_hal_identity() {
     fi
 }
 
-# --- 4b. userspace identity spoof (ubnt-tools id -> caller-differentiated) --
-# Installs the v2 wrapper (see lib/wrappers/ubnt-tools-wrapper-v2.sh for the
-# caller-detection design): unifi-core/uos/ulp-go/ucs-update see genuine
-# Cloud Key identity, unifi-drive and unrecognized callers see the
-# NAS-spoofed default. v2 REQUIRES step 4c's relay too, or unifi-drive's
-# networkInterfaces breaks -- main() below always runs both together.
+# Installs the v2 wrapper (caller detection): unifi-core/uos/ulp-go see genuine Cloud Key
+# identity, unifi-drive the NAS-spoofed default; REQUIRES 4c's relay or networkInterfaces breaks.
 fix_userspace_identity() {
     log "userspace identity spoof (ubnt-tools id -> caller-differentiated v2)"
     local real=/sbin/ubnt-tools.real
@@ -224,12 +167,8 @@ fix_userspace_identity() {
 
     install -m 0755 "$SCRIPT_DIR/lib/wrappers/ubnt-tools-wrapper-v2.sh" /sbin/ubnt-tools
 
-    # Sanity check before returning control: the same two bugs v1 hit live
-    # (missing fields crash-looping unifi-core, and argv0 dispatch on the
-    # real binary) apply to v2's passthrough -- do not remove. This only
-    # exercises the safe-default (NAS-spoofed) branch; confirming unifi-core/
-    # uos receive genuine identity requires restarting them and checking
-    # their own APIs (/api/system, ulp-go's /api/v2/info).
+    # Sanity check: v1's live bugs (missing fields crash-loop unifi-core, argv0 dispatch on the real
+    # binary) apply to v2's passthrough -- do not remove. Only the safe-default branch is exercised here.
     local out
     out=$(/sbin/ubnt-tools id 2>&1) || { log "ERROR: ubnt-tools id failed after wrapper install: $out"; return 1; }
     if ! grep -q '^board\.serialno=' <<<"$out"; then
@@ -244,13 +183,8 @@ fix_userspace_identity() {
     fi
 }
 
-# --- 4c. frame-aware relay for unifi-drive's connection to unifi-core ------
-# Companion to 4b's v2 wrapper -- see
-# lib/wrappers/drive-hardware-relay-v3-frameaware.py for the wire-protocol
-# decode and why the relay must actually parse WS frames (a naive
-# byte-substitution version corrupted the connection live). The systemd unit
-# owns its own iptables rule's lifecycle (added on start, removed on stop)
-# so the two can never be out of sync.
+# Companion to 4b's v2 wrapper; the relay must actually parse WS frames (a naive
+# byte-substitution version corrupted the connection live). The unit owns its iptables rule lifecycle.
 fix_drive_hardware_relay() {
     log "frame-aware Drive hardware-identity relay + iptables redirect"
 
@@ -259,8 +193,7 @@ fix_drive_hardware_relay() {
     install -m 0644 "$SCRIPT_DIR/lib/wrappers/drive-hardware-relay-v3.service" \
         /lib/systemd/system/drive-hardware-relay-v3.service
 
-    # Ordering drop-in so unifi-drive doesn't race the relay/redirect at
-    # boot (it would self-heal via its own reconnect loop either way).
+    # Ordering drop-in so unifi-drive doesn't race the relay/redirect at boot.
     mkdir -p /lib/systemd/system/unifi-drive.service.d
     cat > /lib/systemd/system/unifi-drive.service.d/drive-hardware-relay-order.conf <<'EOF'
 [Unit]
@@ -321,18 +254,8 @@ fix_missing_blocklist_file() {
     chmod 644 /usr/share/unifi-os/unifi-drive-user-blocklist
 }
 
-# --- 7. smartctl drivedb USB-bridge patches ---------------------------------
-# The exact genuine neighboring-entry format was fetched from a real
-# device's own drivedb.h (a hand-maintained C array of struct literals), so
-# the two entries below are built from that real structure, not guessed.
-# Both VID:PID -> -d sat mappings are confirmed working on real hardware.
-#
-# Never edits the real file directly: stages the insertion into a /tmp copy,
-# verifies with `smartctl -B <copy> -P showall` that the result still parses
-# cleanly, and only then copies the verified result over the real file. If
-# the anchor entry this looks for (RTL9210 / JMS561, from smartmontools'
-# shipped drivedb.h) is missing or the post-edit parse check fails, the real
-# file is left untouched and a specific warning is logged.
+# Entries are built from real drivedb.h's neighboring format (both VID:PID -> -d sat confirmed). Never
+# edits the real file directly: stages a /tmp copy, verifies via `smartctl -B -P showall`, else warns and skips.
 _drivedb_insert_after_anchor() {
     local file="$1" anchor="$2" block_file="$3"
     local anchor_line close_line
@@ -411,32 +334,8 @@ EOF
     rm -f "$realtek_block" "$jmicron_block"
 }
 
-# unifi-core's bundled service.js hardcodes a per-console-model
-# "controllers" table (one static object per hardware shortname, e.g.
-# UCKP/Cloud Key Plus), and Cloud Key's entry never includes "drive" -- a
-# stock Cloud Key was never meant to run it. This table is the ONLY source
-# of the app list unifi-core accepts for whole-console backup RESTORE:
-# `POST /api/backup/settings/restore/<id>`'s `applicationsToRestore` is a
-# zod enum built from this exact array at request time. Restoring "drive"
-# from a real backup 400'd with an "invalid_enum_value" naming the
-# console's controllers list with "drive" absent -- NOT a
-# version-compatibility check, and not fixable by matching app versions.
-#
-# Fix: add a {name:"drive",updatable:true} entry to that same array.
-# Verified live end-to-end: after this patch + restarting unifi-core, a real
-# backup's "drive" component restored successfully.
-#
-# FRAGILITY WARNING, more than this script's other fixes: service.js is a
-# minified bundle Ubiquiti rebuilds (with fresh, non-deterministic minified
-# variable names) on every unifi-core release. The literal 7-controller
-# sequence below was confirmed unique (exactly one match) in the build live
-# on this device at patch time; it will very likely need re-deriving
-# (re-grep the live service.js for a controllers array containing
-# "innerspace" and "apollo") after any future unifi-core update. Same
-# safety pattern as fix_smartctl_drivedb(): stage on a temp copy, verify
-# with `node24 --check` before ever touching the real file, warn and leave
-# the real file untouched if the anchor isn't found or the patched file
-# fails to parse.
+# unifi-core's minified service.js has a per-model "controllers" table missing "drive" -- the only source of the zod enum behind backup RESTORE's applicationsToRestore (a real "drive" restore 400'd on invalid_enum_value, NOT a version check).
+# FRAGILE: the literal anchor is one minified build's and needs re-deriving after any unifi-core update; staged temp copy + `node24 --check`, else warn and skip.
 fix_unifi_core_drive_controller() {
     log "unifi-core UCKP controllers table (drive backup-restore support)"
     local svc=/usr/share/unifi-core/app/service.js
@@ -447,10 +346,8 @@ fix_unifi_core_drive_controller() {
         return
     fi
 
-    # Anchor/replacement written to temp FILES rather than interpolated
-    # into a python -c string as bash variables -- both contain literal
-    # double quotes ({name:"network",...}), which would otherwise break
-    # out of the shell-quoted -c argument and corrupt the script.
+    # Anchor/replacement go in temp FILES, not interpolated into python -c: their literal
+    # double quotes would break out of the shell-quoted -c argument and corrupt the script.
     local anchor_file replacement_file
     anchor_file="$(mktemp)"
     replacement_file="$(mktemp)"
@@ -465,10 +362,7 @@ fix_unifi_core_drive_controller() {
         return
     fi
 
-    # node24 --check does ESM module-format detection by file EXTENSION, and
-    # a bare `mktemp` filename has none -- it fails with
-    # ERR_UNKNOWN_FILE_EXTENSION regardless of whether the JS content itself
-    # is valid. `mktemp --suffix=.js` avoids it.
+    # `mktemp --suffix=.js`: node24 --check detects ESM format by extension and fails on an extensionless name.
     local tmp
     tmp="$(mktemp --suffix=.js)"
     python3 - "$svc" "$anchor_file" "$replacement_file" "$tmp" <<'PYEOF'
@@ -513,9 +407,7 @@ main() {
     log "done -- restart unifi-core, ulp-go, and unifi-drive (or reboot) for the identity changes to take effect"
 }
 
-# Guarded so this script can be `source`d to test/re-run an individual fix
-# function in isolation without re-applying every fix -- no effect on
-# normal `./apply-cloudkey-drive-fixes.sh` execution.
+# Guarded so this script can be `source`d to test/re-run one fix function in isolation.
 if ! (return 0 2>/dev/null); then
     main "$@"
 fi

@@ -530,66 +530,12 @@ static int hci_smd_hci_register_dev(struct hci_smd_data *hsmd)
 }
 
 /*
- * hci_smd_setup(hdev) -- hdev->setup callback.
- *
- * This entire function was MISSING from this driver's original port.
- * The public Qualcomm/CodeAurora source this file was based on doesn't
- * implement hdev->setup at all; this is a Ubiquiti-side addition,
- * present only in the vendor's actual binary. Discovered and
- * reconstructed by disassembling the real stock kernel.img (the exact
- * same forensic pipeline used for the display/LED/power drivers
- * earlier in this project), after the symptom (custom kernel reports
- * BD address 00:00:00:00:5A:AD -- an unprovisioned-looking default --
- * while stock reports a real one, 72:A7:41:A0:E5:D9) turned out to
- * reproduce byte-for-byte identically on a fresh factory-reset unit
- * flashed with each kernel in turn, ruling out any hardware/OTP
- * explanation and confirming this is a missing software step.
- *
- * REVISION: the first version of this function shipped with a real
- * off-by-a-register-width bug -- `ldur x0, [x19, #27]` was misread as
- * offset 0x27 (hex) when objdump prints plain, unprefixed immediates
- * in DECIMAL (compare the very next instruction, `add x19, x19, #0x27`,
- * which explicitly carries the 0x prefix for its hex value). The real
- * offset is decimal 27 = 0x1B, twelve bytes earlier than originally
- * used. That earlier version was consequently sending the wrong 6
- * "header" bytes for this command (actually a slice of a second,
- * unrelated command's payload -- see below), which explains why the
- * derived address never actually took effect on real hardware despite
- * smd_write() itself reporting success: the transport layer worked
- * fine, but the packet contents were wrong.
- *
- * Careful re-disassembly (dumping .rodata directly and computing every
- * offset programmatically rather than by hand) shows hci_smd_setup
- * actually sends TWO separate vendor commands back-to-back, both under
- * the same opcode 0xFC0B (OGF 0x3F Vendor-Specific, OCF 0x00B) -- a
- * generic "write NV item" command, structured as:
- *   [opcode_lsb][opcode_msb][plen][0x01][item_id][item_len][item_data...]
- * where 0x01 is a constant "write" sub-op, item_id selects which NV
- * item to write, item_len is that item's data length, and plen is
- * always 3 + item_len (matching total packet length exactly in both
- * commands observed -- a real internal consistency check this
- * reconstruction now satisfies that the original, wrong version did
- * not).
- *
- *   Command 1 (BD address): item_id=0x02, item_len=6, item_data=
- *   the eth0-derived+locally-administered-bit-set address itself.
- *   Derivation confirmed via dev_get_by_name(&init_net, "eth0") +
- *   baswap() (a real, exported net/bluetooth/lib.c helper) + OR'ing
- *   0x02 into the first displayed octet -- the custom kernel's own
- *   eth0 MAC (28:70:4e:77:c5:71) and BD address (2a:70:4e:77:c5:71)
- *   differing only in that bit is not a coincidence.
- *
- *   Command 2 (unidentified NV item): item_id=0x24, item_len=12,
- *   item_data={0xff,0x03,0x07,0x09,0x09,0x09,0x00,0x00,0x09,0x09,0x04,
- *   0x00} -- sent unconditionally, verbatim, with no per-board
- *   substitution of any kind. Its actual purpose is not confirmed (no
- *   further disassembly was done on the receiving firmware side to
- *   determine what NV item 0x24 controls), but stock sends it
- *   unconditionally immediately after the BD address write on every
- *   boot, so it's reproduced here verbatim on the working assumption
- *   that skipping it risks leaving something in a state the firmware
- *   doesn't expect (possibly a required commit/finalize step after any
- *   NV write, though that's inference, not confirmed).
+ * hdev->setup callback. Missing from the public Qualcomm/CodeAurora port --
+ * a Ubiquiti addition recovered by disassembling stock kernel.img. Sends two
+ * vendor "write NV item" commands under opcode 0xFC0B: the BD address derived
+ * from the eth0 MAC with the locally-administered bit set, then an
+ * unidentified 12-byte NV item (0x24) sent verbatim. An earlier version had an
+ * offset bug (objdump prints unprefixed immediates in decimal, not hex).
  */
 static int hci_smd_send_vendor_nv_cmd(const u8 *header, size_t header_len,
 				       const u8 *data, size_t data_len,
