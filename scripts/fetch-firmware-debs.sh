@@ -93,12 +93,12 @@ PYEOF
 }
 
 repack_all() {
-    log "repacking $(wc -l < "$PKG_LIST") package(s) into $DEBS_DIR"
+    log "repacking $(grep -cvE '^[[:space:]]*#|^[[:space:]]*$' "$PKG_LIST") package(s) into $DEBS_DIR"
     mkdir -p "$DEBS_DIR"
     rm -f "$DEBS_DIR"/*.deb
     local failed=0 pkg
     while read -r pkg; do
-        [[ -z "$pkg" ]] && continue
+        [[ -z "$pkg" || "$pkg" == \#* ]] && continue
         if ! "$SCRIPT_DIR/repack-firmware-package.sh" "$pkg" "$SQUASHFS_ROOT" >/dev/null 2>&1; then
             log "  FAIL: $pkg (not in this firmware image, or repack error)"
             failed=$((failed + 1))
