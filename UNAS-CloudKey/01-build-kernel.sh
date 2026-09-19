@@ -169,9 +169,10 @@ fix_broken_symlinks() {
 echo "== Fixing broken symlinks =="
 
 # --- ax88179_178a (the only NIC) + asm-generic/vmlinux.lds.h: from mainline ---
-# ax88179_178a.c is a broken absolute symlink in the vendor tree; vmlinux.lds.h
-# is missing entirely from the ckg2plus-kernel-src repo (and broken in the GPL
-# tarball). vmlinux.lds.h is needed by usr/initramfs_data.S and
+# The vendor tree has ax88179_178a.c as a broken absolute symlink and
+# vmlinux.lds.h missing; ckg2plus-kernel-src mirrors the vendor tree as-is, so
+# restore both here from mainline 3.18.44 rather than editing the mirror.
+# vmlinux.lds.h is needed by usr/initramfs_data.S and
 # arch/arm64/kernel/vmlinux.lds.S.
 MAINLINE_31844=/tmp/linux-3.18.44
 if [ ! -f "$MAINLINE_31844/drivers/net/usb/ax88179_178a.c" ] || \
