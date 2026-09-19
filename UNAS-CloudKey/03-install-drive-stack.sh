@@ -188,16 +188,23 @@ install_ubiquiti_specific_debs() {
         install_via_uos_runnable unifi-drive-config
         # ubnt-libvips-tools/unifi-drive-rclone don't hit the trixie soname break; keep the pinned .debs below.
     fi
-    # Must match the exact name "unifi-drive-rclone", NOT "unifi-rclone" (a different
-    # package, a unifi-talk dep): a looser `find A -o -iname B` picked the wrong .deb by filesystem order and made apt REMOVE unifi-drive.
-    local rclone_deb
+    # unifi-drive-rclone depends on unifi-rclone (>= 1.74.4), which is only in
+    # fw_picked/debs-build/ (never in apt), so install it first. Match the exact
+    # name "unifi-drive-rclone", NOT "unifi-rclone": a looser `find A -o -iname B`
+    # picked the wrong .deb by filesystem order and made apt REMOVE unifi-drive.
+    local rclone_deb unifi_rclone_deb
     rclone_deb=$(find "$DEBS_DIR" -maxdepth 1 -iname 'unifi-drive-rclone*.deb' | head -n1 || true)
+    unifi_rclone_deb=$(find "$DEBS_DIR" -maxdepth 1 -iname 'unifi-rclone_*.deb' | head -n1 || true)
     if [[ -z "$rclone_deb" ]]; then
         cat >&2 <<'EOF'
 ERROR: unifi-drive-rclone (>= 1.74.4) is not present in fw_picked/debs-build/.
 This is a genuine dependency, distinct from unifi-rclone; supply its .deb
 (from this project's own firmware extraction, not the generic apt repo).
 EOF
+        exit 1
+    fi
+    if [[ -z "$unifi_rclone_deb" ]]; then
+        echo "ERROR: unifi-rclone is not present in fw_picked/debs-build/ -- unifi-drive-rclone depends on it and it is in no apt repo." >&2
         exit 1
     fi
 
@@ -208,6 +215,7 @@ EOF
     for pair in \
         "ubnt-libvips42:$DEBS_DIR/ubnt-libvips42_*.deb" \
         "ubnt-libvips-tools:$DEBS_DIR/ubnt-libvips-tools_*.deb" \
+        "unifi-rclone:$unifi_rclone_deb" \
         "unifi-drive-rclone:$rclone_deb" \
         "unifi-drive:$DEBS_DIR/unifi-drive_*.deb" \
         "unifi-drive-config:$DEBS_DIR/unifi-drive-config_*.deb"
