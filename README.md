@@ -142,11 +142,11 @@ and is safe to re-run. Run it from the repository root on the Debian build host
 | Install missing host tools | `install.sh` | build host |
 | Regenerate the pinned Ubiquiti `.deb`s | `scripts/fetch-firmware-debs.sh` | build host |
 | Read the device's running config, live DTB, and stock boot partition | `install.sh` | build host → device |
-| Create the bullseye chroot | `UNAS-CloudKey/00-create-chroot.sh` | build host |
-| Build the custom kernel | `UNAS-CloudKey/01-build-kernel.sh` | chroot |
+| Create the bullseye chroot | `UNAS-CloudKey/00-create-chroot.sh` | build host (root/sudo) |
+| Build the custom kernel | `UNAS-CloudKey/01-build-kernel.sh` | build host (chroot) |
 | Back up, transfer, and flash the kernel + modules | `UNAS-CloudKey/02-flash-kernel.sh` | build host → device |
-| Reboot into the new kernel | `install.sh` | device |
-| Install, fix, reboot, verify | `UNAS-CloudKey/provision-all.sh` (`03`/`04`/`05`) | device |
+| Reboot into the new kernel | `install.sh` | build host → device |
+| Install, fix, reboot, verify | `UNAS-CloudKey/provision-all.sh` (`03`/`04`/`05`) | build host → device |
 
 If the device already runs `3.18.44-btrfscustom`, the kernel stages are skipped;
 `--rebuild-kernel` forces them. `--yes` makes the run non-interactive (requires
@@ -156,22 +156,23 @@ confirmation).
 **Advanced — run stages individually**
 
 The `0N` prefixes are the pipeline order; these are the same steps `install.sh`
-drives, for re-running one stage or debugging. Each reads `DEVICE_HOST` and
-`DEVICE_PASSWORD` from the environment.
+drives, for re-running one stage or debugging. `02` and `provision-all.sh` read
+`DEVICE_HOST` and `DEVICE_PASSWORD` from the environment; `00` must run as root
+(or via `sudo`).
 
 ```
-# 1. regenerate the pinned packages (needed by 03; not stored in the repo)
+# pinned packages (needed by 03; not stored in the repo)
 scripts/fetch-firmware-debs.sh
 
-# 2. create the bullseye chroot once, then build inside it
-UNAS-CloudKey/00-create-chroot.sh
+# 00: create the bullseye chroot once, then 01 inside it
+sudo UNAS-CloudKey/00-create-chroot.sh
 KERNEL_SRC_REPO=https://github.com/hutchx86/ckg2plus-kernel-src.git \
   UNAS-CloudKey/01-build-kernel.sh          # inside the chroot
 
-# 3. flash the built image + module tree (asks for confirmation)
+# 02: flash the built image + module tree (asks for confirmation)
 UNAS-CloudKey/02-flash-kernel.sh <path>/new-boot.img <path>/modules-staging
 
-# 4. install, fix, reboot, verify
+# provision-all.sh: install, fix, reboot, verify (03/04/05)
 UNAS-CloudKey/provision-all.sh
 ```
 
