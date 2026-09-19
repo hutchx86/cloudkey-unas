@@ -156,6 +156,9 @@ fi
 
 export ARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
+# Exported (even empty) so scripts/setlocalversion does not append "+" for a
+# dirty git tree (KERNEL_SRC_REPO clone); the suffix comes from CONFIG_LOCALVERSION.
+export LOCALVERSION="${LOCALVERSION:-}"
 
 echo "== Cleaning any pre-existing build artifacts from the tarball itself =="
 make mrproper
@@ -171,14 +174,11 @@ fix_broken_symlinks() {
 echo "== Fixing broken symlinks / missing vendor files =="
 
 # Restored from mainline 3.18.44 if absent or a broken symlink. ax88179_178a.c
-# is the only NIC; vmlinux.lds.h and vmlinux.lds.S are needed by
-# usr/initramfs_data.S and the arm64 linker script.
+# is the only NIC; the vendor linker scripts are real files in the tree.
 local MAINLINE_31844=/tmp/linux-3.18.44
 local MAINLINE_TARBALL=/tmp/linux-3.18.44.tar.xz
 local -a MAINLINE_FILES=(
     drivers/net/usb/ax88179_178a.c
-    include/asm-generic/vmlinux.lds.h
-    arch/arm64/kernel/vmlinux.lds.S
 )
 local need_mainline=0 f
 for f in "${MAINLINE_FILES[@]}"; do
