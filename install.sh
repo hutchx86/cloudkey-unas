@@ -5,11 +5,14 @@
 # custom kernel unless --rebuild-kernel is given.
 #
 # Usage:
-#   ./install.sh [--rebuild-kernel] [--yes]
+#   ./install.sh [--rebuild-kernel] [--no-flash] [--yes]
 #
 # Options:
 #   --rebuild-kernel   Force 00/01/02 even if the device already runs the
 #                      custom kernel.
+#   --no-flash         Run everything up to (but not including) the flash,
+#                      then stop. The built image + modules are saved under
+#                      fw_picked/ for a later manual 02.
 #   --yes              Non-interactive. Requires DEVICE_HOST and
 #                      DEVICE_PASSWORD in the environment; implies
 #                      FLASH_CONFIRM=yes (no flash confirmation). Do not use
@@ -39,6 +42,7 @@ DEFAULT_KERNEL_SRC_REPO="https://github.com/hutchx86/ckg2plus-kernel-src.git"
 HOST_APT_PACKAGES=(debootstrap wget ca-certificates python3 squashfs-tools abootimg rsync openssh-client git)
 
 REBUILD_KERNEL=0
+NO_FLASH=0
 ASSUME_YES="${ASSUME_YES:-0}"
 
 log()  { echo "[install] $*"; }
@@ -56,6 +60,7 @@ usage() {
 while (($#)); do
     case "$1" in
         --rebuild-kernel) REBUILD_KERNEL=1 ;;
+        --no-flash)       NO_FLASH=1 ;;
         --yes|-y)         ASSUME_YES=1 ;;
         -h|--help)        usage; exit 0 ;;
         *)                die "unknown option: $1 (see --help)" ;;
@@ -295,6 +300,12 @@ main() {
         create_chroot
         build_kernel
         save_build_outputs
+        if (( NO_FLASH )); then
+            log "--no-flash: stopping before flash"
+            log "  image:   $SCRIPT_DIR/fw_picked/cloudkey-kernel-build/new-boot.img"
+            log "  modules: $SCRIPT_DIR/fw_picked/kernel-modules-$EXPECT_KERNEL"
+            return 0
+        fi
         flash_kernel
         reboot_and_wait_for_kernel
     fi
