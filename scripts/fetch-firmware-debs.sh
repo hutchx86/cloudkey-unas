@@ -1,5 +1,5 @@
 #!/bin/bash
-# fetch-firmware-debs.sh -- rebuild fw_picked/debs-build/ from Ubiquiti's UNAS Pro
+# fetch-firmware-debs.sh -- rebuild fw_picked/debs-build/ from Ubiquiti's UNAS2
 # firmware: checksum-verify the pinned image, extract its squashfs rootfs (offset
 # located directly, no binwalk), then repack every package in debs-build.packages
 # via repack-firmware-package.sh (host dpkg-deb; no chroot, no package execution).
@@ -8,9 +8,9 @@
 # Usage:    scripts/fetch-firmware-debs.sh
 #
 # Environment overrides:
-#   FW_URL        download URL (default: the pinned v5.1.33 image)
-#   FW_FILE       local firmware path (default fw-download/UNASPRO-5.1.33.bin)
-#   SQUASHFS_ROOT extracted rootfs (default fw_extract/UNASPRO-5.1.33/squashfs-root)
+#   FW_URL        download URL (default: the pinned UNAS2 6.0.9 image)
+#   FW_FILE       local firmware path (default fw-download/UNAS2-6.0.9.bin)
+#   SQUASHFS_ROOT extracted rootfs (default fw_extract/UNAS2-6.0.9/squashfs-root)
 #   UNSQUASHFS    path to unsquashfs if not on PATH
 #
 # The debs are not tracked by git; re-verify with UNAS-CloudKey/05-verify.sh.
@@ -20,11 +20,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-FW_VERSION="v5.1.33+44ce47b"
-FW_SHA256="0d711a42b68649bf2a9e129123211e59896d8b29860d85c8c43b4e98d2c59d66"
-FW_URL="${FW_URL:-https://fw-download.ubnt.com/data/unifi-drive/7a07-UNASPRO-5.1.33-10b23dea-e891-4699-bd66-3ecff7f954db.bin}"
-FW_FILE="${FW_FILE:-$PROJECT_DIR/fw-download/UNASPRO-5.1.33.bin}"
-SQUASHFS_ROOT="${SQUASHFS_ROOT:-$PROJECT_DIR/fw_extract/UNASPRO-5.1.33/squashfs-root}"
+FW_VERSION="UNAS2-6.0.9+ebb4e934"
+FW_SHA256="b5c08497fe64ac278c6fa5c4c015098e76d282d0497760d4df0bf5884269423a"
+FW_URL="${FW_URL:-https://fw-download.ubnt.com/data/unifi-drive/e4da-UNAS2-6.0.9-ebb4e934-573a-4ddb-9f62-2712429f1c20.bin}"
+FW_FILE="${FW_FILE:-$PROJECT_DIR/fw-download/UNAS2-6.0.9.bin}"
+SQUASHFS_ROOT="${SQUASHFS_ROOT:-$PROJECT_DIR/fw_extract/UNAS2-6.0.9/squashfs-root}"
 DEBS_DIR="$PROJECT_DIR/fw_picked/debs-build"
 PKG_LIST="$PROJECT_DIR/fw_picked/debs-build.packages"
 UNSQUASHFS="${UNSQUASHFS:-unsquashfs}"

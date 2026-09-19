@@ -1,80 +1,19 @@
-analytic-report-go
-base-files-deps-common
-ble-http-transport
-c2lib
-emmcmond
-fabric-agent
-jq
-kmod-debbox-modules
-libcurlpp
-libjq1
-libldb2
-libnss-winbind
-libpam-usermapper
-libsodiumpp
-libtalloc2
-libtdb1
-libtevent0
-libubnt
-libuled
-libwbclient0
-linux-image-5.10.216-alpine-unas
-nginx-rec
-node24
-openssh-server-keygen
-python3-ldb
-python3-samba
-python3-talloc
-python3-tdb
-python3-unifi-console-protos
-samba
-samba-ad-provision
-samba-common
-samba-common-bin
-samba-libs
-samba-vfs-modules
-simple-pid
-stm32h750-dfu-bl
-systemd-networkd-fallbacker
-tdb-tools
-ubnd
-ubnt-archive-keyring
-ubnt-binmecpp
-ubnt-common
-ubnt-disk-smart-mon
+# Packages repacked from the pinned firmware into fw_picked/debs-build/.
+#
+# Trimmed to what the pipeline actually installs from fw_picked/ -- NOT the full
+# UNAS package set. On trixie, samba comes from apt and ubnt-libvips42 is routed
+# through `uos runnable install`, so the bullseye-only samba/lib*/python3-*/winbind
+# pins are gone; the UNAS Pro internals (c2lib, emmcmond, libubnt, linux-image-*,
+# unas-pro-*, unifi-assets-unaspro, nginx-rec, ulp-go, ustd, ...) are never
+# installed by the conversion.
+#
+# ubnt-libvips42 is listed under its trixie name (ubnt-libvips42t64): the bullseye
+# name does not exist in the UNAS2 6.0.9 image.
+ubnt-libvips42t64
 ubnt-libvips-tools
-ubnt-libvips42
-ubnt-rpsd
-ubnt-sfp-handler
-ubnt-tools
-ubnt-ucp4cpp
-ubntnas
-ucore-setup-listener
-ucs-agent
-ui-snmp
-uid-agent
-ulcmd
-uled-control
-ulp-go
-unas-initramfs
-unas-pro-gd-lcm-fw
-unas-pro-lcm-fw
-unas-pro-rec
-unifi-assets-unaspro
-unifi-core
-unifi-directory
 unifi-drive
 unifi-drive-config
 unifi-drive-rclone
-unifi-email-templates-all
-unifi-hal
-unifi-identity-update
 unifi-rclone
-uos
-uos-agent
-uos-discovery-client
-ustate-exporter
-ustd
-winbind
 wsdd
 wsdd-server
