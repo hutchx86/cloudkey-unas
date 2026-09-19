@@ -6,8 +6,9 @@
 #   ./02-flash-kernel.sh <new-boot.img> <modules-staging-dir>
 # Env: SSH_CONTROL_SOCKET, BACKUP_DIR, KERNEL_VERSION, FLASH_CONFIRM=yes, BOOT_PARTITION
 # (default /dev/mmcblk0p42 "boot"; NEVER /dev/mmcblk0p43 "recovery").
-# Deliberately NOT automated: driver-safety review, the recovery-ready "yes" prompt below,
-# and loading the new module (files are installed but never insmod'd/modprobe'd).
+# Driven by install.sh (flash -> reboot -> provision); the "yes" prompt below is the one
+# interactive step. Still NOT automated here: driver-safety review and loading the new
+# module (files are installed but never insmod'd/modprobe'd).
 
 set -euo pipefail
 
@@ -158,16 +159,14 @@ main() {
 
     cat <<EOF
 
-Done. NOT done automatically (deliberately -- see this script's own header):
-  - Reboot the device when ready: ssh_dev reboot (or via the WebUI).
-  - After reboot, confirm: uname -r reports $KERNEL_VERSION, lsmod shows
-    the expected modules, and systemctl --failed shows nothing new.
-  - Test any NEWLY-built driver manually over SSH before wiring it to load
-    automatically at boot (insmod, check dmesg, exercise it, rmmod) -- see
-    01-build-kernel.sh's own NEXT STEPS output for the exact commands.
-  - Once you've rebooted and confirmed the kernel is good, run
-    provision-all.sh (or 03-install-drive-stack.sh directly) to bring up
-    the rest of the Drive stack.
+Done. Flash complete; $BOOT_PARTITION now matches $NEW_BOOT_IMG.
+  - install.sh reboots and provisions (03/04/05) automatically after this.
+  - Running 02 by hand: reboot (ssh root@<ip> reboot), confirm `uname -r`
+    reports $KERNEL_VERSION, then run provision-all.sh (or
+    03-install-drive-stack.sh) to bring up the Drive stack.
+  - Either way: test any NEWLY-built driver over SSH before wiring it to
+    load automatically at boot (insmod, dmesg, exercise, rmmod) -- see
+    01-build-kernel.sh's NEXT STEPS output.
 EOF
 }
 
