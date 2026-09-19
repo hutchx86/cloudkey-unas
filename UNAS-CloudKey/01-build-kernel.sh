@@ -163,35 +163,46 @@ make mrproper
 }
 
 fix_broken_symlinks() {
-# ---- 2. Fix broken symlinks ----
-# The tarball has ~23 absolute symlinks into Ubiquiti's build host. Source-less
-# accessory drivers are disabled; ax88179_178a.c (the only NIC) comes from mainline.
-echo "== Fixing broken symlinks =="
+# ---- 2. Fix broken/missing vendor files ----
+# The vendor tree symlinks some files into Ubiquiti's build host and omits
+# others; ckg2plus-kernel-src mirrors it as-is, so restore what the arm64 build
+# needs from mainline 3.18.44 here (source-less accessory drivers are disabled
+# instead).
+echo "== Fixing broken symlinks / missing vendor files =="
 
-# --- ax88179_178a (the only NIC) + asm-generic/vmlinux.lds.h: from mainline ---
-# The vendor tree has ax88179_178a.c as a broken absolute symlink and
-# vmlinux.lds.h missing; ckg2plus-kernel-src mirrors the vendor tree as-is, so
-# restore both here from mainline 3.18.44 rather than editing the mirror.
-# vmlinux.lds.h is needed by usr/initramfs_data.S and
-# arch/arm64/kernel/vmlinux.lds.S.
-MAINLINE_31844=/tmp/linux-3.18.44
-if [ ! -f "$MAINLINE_31844/drivers/net/usb/ax88179_178a.c" ] || \
-   [ ! -f "$MAINLINE_31844/include/asm-generic/vmlinux.lds.h" ]; then
-    echo "   Downloading mainline 3.18.44 source (ax88179_178a.c, vmlinux.lds.h)..."
-    if [ ! -f /tmp/linux-3.18.44.tar.xz ]; then
+# Restored from mainline 3.18.44 if absent or a broken symlink. ax88179_178a.c
+# is the only NIC; vmlinux.lds.h and vmlinux.lds.S are needed by
+# usr/initramfs_data.S and the arm64 linker script.
+local MAINLINE_31844=/tmp/linux-3.18.44
+local MAINLINE_TARBALL=/tmp/linux-3.18.44.tar.xz
+local -a MAINLINE_FILES=(
+    drivers/net/usb/ax88179_178a.c
+    include/asm-generic/vmlinux.lds.h
+    arch/arm64/kernel/vmlinux.lds.S
+)
+local need_mainline=0 f
+for f in "${MAINLINE_FILES[@]}"; do
+    [ -f "$MAINLINE_31844/$f" ] || need_mainline=1
+done
+if [ "$need_mainline" = 1 ]; then
+    echo "   Fetching mainline 3.18.44 source for: ${MAINLINE_FILES[*]}"
+    if [ ! -f "$MAINLINE_TARBALL" ]; then
         ( cd /tmp && wget -q https://cdn.kernel.org/pub/linux/kernel/v3.x/linux-3.18.44.tar.xz )
     fi
-    ( cd /tmp && tar xf linux-3.18.44.tar.xz \
-        linux-3.18.44/drivers/net/usb/ax88179_178a.c \
-        linux-3.18.44/include/asm-generic/vmlinux.lds.h )
+    local -a members=()
+    for f in "${MAINLINE_FILES[@]}"; do
+        members+=("linux-3.18.44/$f")
+    done
+    ( cd /tmp && tar xf linux-3.18.44.tar.xz "${members[@]}" )
 fi
-rm -f drivers/net/usb/ax88179_178a.c
-cp "$MAINLINE_31844/drivers/net/usb/ax88179_178a.c" drivers/net/usb/ax88179_178a.c
-if [ ! -s include/asm-generic/vmlinux.lds.h ]; then
-    rm -f include/asm-generic/vmlinux.lds.h
-    cp "$MAINLINE_31844/include/asm-generic/vmlinux.lds.h" include/asm-generic/vmlinux.lds.h
-    echo "   Restored include/asm-generic/vmlinux.lds.h from mainline."
-fi
+for f in "${MAINLINE_FILES[@]}"; do
+    if [ ! -s "$f" ]; then
+        mkdir -p "$(dirname "$f")"
+        rm -f "$f"
+        cp "$MAINLINE_31844/$f" "$f"
+        echo "   Restored $f from mainline."
+    fi
+done
 
 # --- hci_smd.c: real Qualcomm/CodeAurora GPLv2 source ---
 # Broken symlink; ported from a public MSM8953-era tree and kept in
