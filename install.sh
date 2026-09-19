@@ -26,7 +26,8 @@
 #   CHROOT_PATH          bullseye chroot (default $HOME/bullseye-chroot)
 #   SSH_CONTROL_SOCKET   SSH ControlMaster socket (default /tmp/ck_ssh_ctrl.sock)
 #   FLASH_CONFIRM        yes to skip 02's typed confirmation
-#   REBOOT_WAIT_MAX_SECS max seconds to wait for the rebooted device (default 900)
+#   REBOOT_WAIT_MAX_SECS / REBOOT_WAIT_BEFORE_POLLING_SECS / REBOOT_POLL_INTERVAL_SECS
+#                        reboot-wait tuning (defaults 900 / 20 / 10)
 
 set -euo pipefail
 
