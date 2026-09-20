@@ -79,8 +79,11 @@ verify_final_state() {
         failures=$((failures + 1))
     fi
 
-    # GET .../proxy/drive/api/system with no auth should return 401 (correct for a routed backend);
-    # an empty/"000" response means nginx or unifi-drive is down. curl's -w already prints "000".
+    # GET .../proxy/drive/api/system with no auth should return 401 (routed Drive
+    # backend, auth required). The failure message distinguishes the mode:
+    #   200 -> the unifi-core web UI answered (no Drive location: app not installed)
+    #   000/empty -> nginx or unifi-drive is down
+    #   5xx -> unifi-drive is up but erroring
     local drive_http_code=""
     service_deadline=$((SECONDS + SERVICE_READY_TIMEOUT_SECS))
     while (( SECONDS < service_deadline )); do
@@ -91,8 +94,21 @@ verify_final_state() {
     if [[ "$drive_http_code" == "401" ]]; then
         log "  OK: Drive API reachable and routed (401 Unauthorized, as expected without a session)"
     else
-        log "  FAIL: Drive API returned HTTP '$drive_http_code' after waiting ${SERVICE_READY_TIMEOUT_SECS}s (expected 401) -- nginx routing or unifi-drive itself may be down"
         failures=$((failures + 1))
+        case "$drive_http_code" in
+            200)
+                log "  FAIL: got HTTP 200 instead of 401 -- the unifi-core web UI answered /proxy/drive/ (no Drive location), so the Drive app is not installed (or its nginx conf is missing)"
+                ;;
+            000|"")
+                log "  FAIL: no response from https://localhost/proxy/drive/api/system -- nginx or unifi-drive is down"
+                ;;
+            5*)
+                log "  FAIL: Drive API returned HTTP $drive_http_code -- unifi-drive is up but erroring"
+                ;;
+            *)
+                log "  FAIL: Drive API returned HTTP '$drive_http_code' after waiting ${SERVICE_READY_TIMEOUT_SECS}s (expected 401)"
+                ;;
+        esac
     fi
 
     if ssh_dev systemctl is-active --quiet drive-hardware-relay-v3.service; then
