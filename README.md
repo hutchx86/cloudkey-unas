@@ -212,6 +212,20 @@ UNAS-CloudKey/provision-all.sh
   installing by direct URL works.
 - **Known:** untested kernel drivers ship as loadable modules and must be
   exercised before being promoted to built-in.
+- **Planned:** detect the device's UniFi OS version at runtime and act
+  accordingly — today the pinned debs come from UNAS2 6.0.9 and `03` only
+  special-cases trixie vs bullseye via `/etc/os-release`.
+
+## Changelog
+
+- **2026-09-20** — Verified on **UniFi OS 6.0.9** (Debian trixie): pinned
+  packages are rebuilt from the **UNAS2 6.0.9** firmware, and a single
+  `install.sh` drives the whole pipeline (build kernel → flash → reboot →
+  provision → verify) on a stock Cloud Key.
+- **2026-09-19** — Added the single-command `install.sh` entry point; README
+  and docs reworked.
+- **2026-09-14** — Initial public release (GPL-2.0-only); verified on a stock
+  Cloud Key Gen 2 Plus after an in-place v6.0.7 firmware update.
 
 ## Troubleshooting
 
