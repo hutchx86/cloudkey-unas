@@ -1037,6 +1037,10 @@ KERNEL_VERSION="$(make -s kernelrelease)"
 rm -f "$MODULES_STAGING_DIR/lib/modules/$KERNEL_VERSION/build"
 rm -f "$MODULES_STAGING_DIR/lib/modules/$KERNEL_VERSION/source"
 
+# 3.18 emits no modules.builtin.modinfo (a >=5.x artifact); a newer depmod warns
+# when it is absent. An empty file silences that with no behaviour change.
+: > "$MODULES_STAGING_DIR/lib/modules/$KERNEL_VERSION/modules.builtin.modinfo"
+
 depmod -b "$MODULES_STAGING_DIR" "$KERNEL_VERSION"
 if [ ! -f "$MODULES_STAGING_DIR/lib/modules/$KERNEL_VERSION/modules.dep" ]; then
     echo "ERROR: depmod did not produce modules.dep -- module installation" >&2
